@@ -347,7 +347,7 @@ ci-ledger precision --repo Udaykyama/newproject01 --labels test/flake-canary.lab
 ```
 precision 100.0% · recall 100.0% over 2 labelled test(s)
   confirmed-verdict precision: 100.0%
-  tp 1 · fp 0 · fn 0 · tn 0
+  tp 1 · fp 0 · fn 0 · tn 1
   flagged but unlabelled (not scored): 3
 ```
 

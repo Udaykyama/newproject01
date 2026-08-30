@@ -651,7 +651,7 @@ export class Store {
     return row ? toApiToken(row) : null;
   }
 
-  /** True once at least one token exists, whether or not it is still active. */
+  /** True when at least one token exists that has not been revoked. */
   hasApiTokens(): boolean {
     return this.db.prepare('SELECT 1 FROM api_tokens WHERE revoked_at IS NULL LIMIT 1').get() !== undefined;
   }
