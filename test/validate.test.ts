@@ -29,6 +29,12 @@ describe('isValidBranchName', () => {
     ['a double dot', 'a..b'],
     ['a double slash', 'a//b'],
     ['a reflog expression', 'main@{1}'],
+    ['a comma', 'my,branch'],
+    ['an asterisk', 'refs/*'],
+    ['a tilde', 'main~1'],
+    ['a caret', 'main^'],
+    ['a colon', 'main:foo'],
+    ['a backslash', 'main\\foo'],
     ['a control character', 'main\u0000'],
     ['a newline', 'main\nfoo'],
   ])('rejects %s', (_label, name) => {

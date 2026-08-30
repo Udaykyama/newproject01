@@ -13,7 +13,9 @@ export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: 
 
 /** GitHub's own constraint on owner and repository names. */
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
-const BRANCH_PATTERN = /^[A-Za-z0-9._/+-]+$/;
+// The hyphen is placed first so it cannot be misread as, or later become
+// part of, a range such as `+-` (which would also admit a comma).
+const BRANCH_PATTERN = /^[-A-Za-z0-9._/+]+$/;
 const SHA_PATTERN = /^[0-9a-fA-F]{7,64}$/;
 const RUNNERS: readonly RunnerOs[] = ['linux', 'windows', 'macos'];
 const STATUSES: readonly TestStatus[] = ['passed', 'failed', 'error', 'skipped'];

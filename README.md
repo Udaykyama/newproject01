@@ -257,7 +257,7 @@ timed-out six-hour run would drag an average far above a typical build.
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run  (158 tests)
+npm test            # vitest run  (164 tests)
 npm run build       # tsc + copy schema.sql into dist
 npm run dev         # watch mode
 ```
