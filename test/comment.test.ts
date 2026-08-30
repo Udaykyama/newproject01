@@ -196,4 +196,51 @@ describe('renderPullRequestComment', () => {
   it('drops the quarantine section entirely when empty', () => {
     expect(renderPullRequestComment(report())).not.toContain('Quarantined');
   });
+
+  it('separates already-quarantined flakes from new findings', () => {
+    const body = renderPullRequestComment(
+      report({
+        flakes: [
+          flake({ name: 'newly found' }),
+          flake({ name: 'already handled', quarantined: true }),
+        ],
+      }),
+    );
+
+    const summaryLine = body.split('\n').find((line) => line.includes('touched by this PR'));
+    expect(summaryLine).toContain('1 flaky test');
+    expect(body).toContain('1 already quarantined');
+  });
+
+  it('says there is nothing to act on when every flake is quarantined', () => {
+    const body = renderPullRequestComment(
+      report({ flakes: [flake({ quarantined: true })] }),
+    );
+
+    expect(body).toContain('No unhandled flaky tests');
+  });
+
+  it('labels an estimate as an estimate when a run was not priced from job data', () => {
+    const body = renderPullRequestComment(
+      report({
+        cost: {
+          ...report().cost,
+          confidence: {
+            weakestSource: 'wallclock',
+            pricedPerJob: 1,
+            wallClockRuns: 2,
+            reportedRuns: 0,
+            exact: false,
+          },
+        },
+      }),
+    );
+
+    expect(body).toContain('Estimate');
+    expect(body).toContain('wall-clock');
+  });
+
+  it('says nothing about confidence when every run reproduces the invoice', () => {
+    expect(renderPullRequestComment(report())).not.toContain('Estimate');
+  });
 });

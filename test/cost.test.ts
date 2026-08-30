@@ -75,6 +75,45 @@ describe('priceRun', () => {
   it('treats a negative duration as one billable minute rather than a credit', () => {
     expect(priceRun(run({ durationMs: -5000 }), RATES).usd).toBeGreaterThan(0);
   });
+
+  it('prices each job at its own OS rate instead of collapsing to one', () => {
+    // Collapsing this run to macOS would price it at 20 × the macOS rate;
+    // collapsing to Linux would be 10× too cheap. Neither matches the invoice.
+    const cost = priceRun(
+      run({
+        runnerOs: 'macos',
+        durationMs: 20 * MINUTE,
+        jobs: [
+          { externalId: 'j1', name: 'build', runnerOs: 'linux', durationMs: 10 * MINUTE },
+          { externalId: 'j2', name: 'e2e', runnerOs: 'macos', durationMs: 10 * MINUTE },
+        ],
+      }),
+      RATES,
+    );
+
+    expect(cost.pricedPerJob).toBe(true);
+    expect(cost.billableMinutes).toBe(20);
+    expect(cost.usd).toBeCloseTo(10 * RATES.linux + 10 * RATES.macos, 6);
+  });
+
+  it('rounds each job up separately, as the provider does', () => {
+    const cost = priceRun(
+      run({
+        durationMs: 60_000,
+        jobs: [
+          { externalId: 'j1', name: 'a', runnerOs: 'linux', durationMs: 30_000 },
+          { externalId: 'j2', name: 'b', runnerOs: 'linux', durationMs: 30_000 },
+        ],
+      }),
+      RATES,
+    );
+
+    expect(cost.billableMinutes).toBe(2);
+  });
+
+  it('falls back to the run total when no job rows were captured', () => {
+    expect(priceRun(run({ jobs: [] }), RATES).pricedPerJob).toBe(false);
+  });
 });
 
 describe('summariseCosts', () => {
@@ -105,6 +144,35 @@ describe('summariseCosts', () => {
 
   it('returns zeroes for an empty run list', () => {
     expect(summariseCosts([], RATES)).toMatchObject({ runCount: 0, usd: 0, billableMinutes: 0 });
+  });
+
+  describe('confidence', () => {
+    const withJobs = run({
+      durationSource: 'jobs',
+      jobs: [{ externalId: 'j1', name: 'build', runnerOs: 'linux', durationMs: MINUTE }],
+    });
+
+    it('is exact only when every run was priced from job rows', () => {
+      expect(summariseCosts([withJobs], RATES).confidence.exact).toBe(true);
+      expect(summariseCosts([withJobs, run()], RATES).confidence.exact).toBe(false);
+    });
+
+    it('reports the weakest provenance in the sample', () => {
+      const mixed = summariseCosts([withJobs, run({ durationSource: 'wallclock' })], RATES);
+      expect(mixed.confidence.weakestSource).toBe('wallclock');
+      expect(mixed.confidence.wallClockRuns).toBe(1);
+
+      const weakest = summariseCosts(
+        [withJobs, run({ durationSource: 'wallclock' }), run({ durationSource: 'reported' })],
+        RATES,
+      );
+      expect(weakest.confidence.weakestSource).toBe('reported');
+      expect(weakest.confidence.reportedRuns).toBe(1);
+    });
+
+    it('is not exact with no runs at all — there is nothing to be confident about', () => {
+      expect(summariseCosts([], RATES).confidence.exact).toBe(false);
+    });
   });
 });
 
@@ -154,6 +222,42 @@ describe('compareToBaseline', () => {
 
   it('reports a null percentage when there is no baseline yet', () => {
     expect(compareToBaseline([run()], [], RATES).deltaPct).toBeNull();
+  });
+
+  it('compares each workflow to its own history, not to the repo average', () => {
+    // A nightly job that costs 100× a PR build must not inflate the baseline
+    // for a PR that never triggers it.
+    const prRuns = [run({ workflowName: 'ci', durationMs: 10 * MINUTE })];
+    const baselineRuns = [
+      run({ workflowName: 'ci', durationMs: 10 * MINUTE }),
+      run({ workflowName: 'nightly', durationMs: 600 * MINUTE }),
+    ];
+
+    expect(compareToBaseline(prRuns, baselineRuns, RATES).deltaUsd).toBeCloseTo(0, 6);
+  });
+
+  it('sums the per-workflow baselines when a PR triggers several', () => {
+    const prRuns = [
+      run({ workflowName: 'ci', durationMs: 10 * MINUTE }),
+      run({ workflowName: 'lint', durationMs: 2 * MINUTE }),
+    ];
+    const baselineRuns = [
+      run({ workflowName: 'ci', durationMs: 10 * MINUTE }),
+      run({ workflowName: 'lint', durationMs: 2 * MINUTE }),
+    ];
+
+    expect(compareToBaseline(prRuns, baselineRuns, RATES).deltaUsd).toBeCloseTo(0, 6);
+  });
+
+  it('contributes nothing for a workflow the base branch has never run', () => {
+    const comparison = compareToBaseline(
+      [run({ workflowName: 'brand-new', durationMs: 10 * MINUTE })],
+      [run({ workflowName: 'ci', durationMs: 10 * MINUTE })],
+      RATES,
+    );
+
+    expect(comparison.baselineUsd).toBe(0);
+    expect(comparison.deltaPct).toBeNull();
   });
 });
 
