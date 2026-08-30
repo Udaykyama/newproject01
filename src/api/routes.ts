@@ -11,6 +11,26 @@ import type { RepoRef } from '../types.js';
 /** JUnit reports from large monorepos are genuinely megabytes of XML. */
 const INGEST_BODY_LIMIT = '20mb';
 
+/** Quarantine reasons are free text from an operator; cap them for storage. */
+const MAX_REASON_LENGTH = 500;
+const MAX_ACTOR_LENGTH = 120;
+
+/**
+ * Read a non-negative integer query parameter.
+ *
+ * Returns `null` when the value is present but not a valid bound, so the caller
+ * can reject rather than silently paginating from somewhere the client did not
+ * ask for.
+ */
+function readBound(value: unknown, fallback: number): number | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string') return null;
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
 function readRepoParams(req: Request, res: Response): RepoRef | null {
   // Express types route params as `string | string[]`; repeated params would
   // arrive as an array, which is never valid here.
@@ -61,12 +81,15 @@ export function createRouter(context: AppContext): Router {
     }
 
     const outcome = store.recordRun(parsed.value);
-    res.status(outcome.inserted ? 201 : 200).json({
+    // `recorded` and `duplicate` describe the *results*, not the row. The
+    // webhook writes the same run row for its duration data, so "a row already
+    // existed" says nothing about whether this upload's tests were stored.
+    res.status(outcome.inserted || outcome.resultsRecorded > 0 ? 201 : 200).json({
       runId: outcome.runId,
-      recorded: outcome.inserted,
-      testsIngested: outcome.inserted ? parsed.value.results.length : 0,
+      recorded: outcome.resultsRecorded > 0,
+      testsIngested: outcome.resultsRecorded,
       // Surfaced so a CI job can tell a genuine upload from a replay.
-      duplicate: !outcome.inserted,
+      duplicate: outcome.duplicateResults,
     });
   });
 
@@ -78,14 +101,28 @@ export function createRouter(context: AppContext): Router {
     const repoId = requireRepoId(context, repo, res);
     if (repoId === null) return;
 
+    // Unbounded reads are fine for one repository and untenable for a monorepo
+    // with tens of thousands of tests, so the window is always bounded.
+    const limit = readBound(req.query.limit, config.reads.defaultPageSize);
+    const offset = readBound(req.query.offset, 0);
+    if (limit === null || offset === null) {
+      res.status(400).json({ error: 'limit and offset must be non-negative integers' });
+      return;
+    }
+
     const report = buildRepoReport(store, repoId, repo, config);
     const includeStable = req.query.includeStable === 'true';
+    const matching = includeStable ? report.assessments : report.assessments.filter(isFlaky);
+    const pageSize = Math.min(limit, config.reads.maxPageSize);
 
     res.json({
       repo: `${repo.owner}/${repo.name}`,
       generatedAt: report.generatedAt,
       quarantined: report.quarantined,
-      tests: includeStable ? report.assessments : report.assessments.filter(isFlaky),
+      total: matching.length,
+      limit: pageSize,
+      offset,
+      tests: matching.slice(offset, offset + pageSize),
     });
   });
 
@@ -138,9 +175,22 @@ export function createRouter(context: AppContext): Router {
       return;
     }
 
-    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : null;
-    store.quarantine(store.upsertRepo(repo), suite, name, reason);
-    res.status(201).json({ quarantined: { suite, name, reason } });
+    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, MAX_REASON_LENGTH) : null;
+    // Recorded so a stale quarantine can be traced back to a person and a
+    // date. A skip with no owner is how a test stays skipped for three years.
+    const createdBy = typeof body.createdBy === 'string' ? body.createdBy.trim().slice(0, MAX_ACTOR_LENGTH) : null;
+
+    let expiresAt: string | null = null;
+    if (body.expiresAt !== undefined && body.expiresAt !== null) {
+      if (typeof body.expiresAt !== 'string' || Number.isNaN(Date.parse(body.expiresAt))) {
+        res.status(400).json({ error: 'expiresAt must be an ISO 8601 timestamp' });
+        return;
+      }
+      expiresAt = new Date(body.expiresAt).toISOString();
+    }
+
+    store.quarantine(store.upsertRepo(repo), suite, name, reason, createdBy || null, expiresAt);
+    res.status(201).json({ quarantined: { suite, name, reason, createdBy: createdBy || null, expiresAt } });
   });
 
   router.delete('/v1/repos/:owner/:repo/quarantine', ingestLimit, ingestAuth, json(), (req, res) => {

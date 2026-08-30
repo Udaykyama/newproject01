@@ -1,0 +1,73 @@
+name: CI
+
+# A CI-cost product with no CI of its own is a credibility problem before it is
+# a technical one. This workflow is also the product's first customer: it emits
+# the JUnit report ci-ledger ingests and reports its own runs back to a
+# ci-ledger instance, which makes the roadmap's "dogfooding" milestone
+# measurable rather than aspirational.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: typecheck, test, build
+    runs-on: ubuntu-latest
+    env:
+      # Lifted to job scope so the self-ingest step can test for it: a step
+      # cannot read the `secrets` context in its own `if` condition.
+      CI_LEDGER_URL: ${{ secrets.CI_LEDGER_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Record the start time
+        # Measured rather than reported as zero: without a GitHub App to supply
+        # per-job billing data this is the only real duration available, and
+        # zero would price every run at the one-minute floor.
+        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      - run: npm run typecheck
+
+      - name: Test
+        run: npm run test:ci
+
+      - run: npm run build
+
+      - name: Upload JUnit report
+        # Uploaded on failure too: a failing run is the interesting one for
+        # flake detection.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-report
+          path: reports/junit.xml
+          if-no-files-found: error
+
+      - name: Report this run to ci-ledger
+        # Skipped on forks and wherever no instance is configured, so the build
+        # never fails for want of a deployment.
+        if: always() && env.CI_LEDGER_URL != ''
+        uses: ./.github/actions/report-to-ci-ledger
+        with:
+          url: ${{ secrets.CI_LEDGER_URL }}
+          token: ${{ secrets.CI_LEDGER_INGEST_TOKEN }}
+          report-path: reports/junit.xml
+          started-at: ${{ env.RUN_STARTED_AT }}
+          conclusion: ${{ job.status }}

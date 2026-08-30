@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+reports
+data
+.git
+.github
+test
+*.md
+.env
+.env.local
+*.pem
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

@@ -1,6 +1,7 @@
 import { Webhooks } from '@octokit/webhooks';
 import type { AppContext } from '../context.js';
-import type { RepoRef, RunMetadata } from '../types.js';
+import type { DurationSource, JobRecord, RepoRef, RunMetadata } from '../types.js';
+import { UNKNOWN_BRANCH, UNKNOWN_CONCLUSION, UNKNOWN_WORKFLOW } from '../types.js';
 import { buildPullRequestReport } from '../analysis/report.js';
 import { renderPullRequestComment } from './comment.js';
 import { summariseJobs, upsertPullRequestComment } from './client.js';
@@ -11,7 +12,8 @@ import { summariseJobs, upsertPullRequestComment } from './client.js';
  * `workflow_run.completed` supplies run metadata and, critically, the
  * `run_attempt` counter that makes re-runs visible. Test-level results arrive
  * separately through the ingest endpoint, because GitHub does not put test
- * outcomes in the webhook payload.
+ * outcomes in the webhook payload — so both writers land on the same run row
+ * and the store merges them.
  */
 
 interface WorkflowRunLike {
@@ -26,20 +28,28 @@ interface WorkflowRunLike {
   pull_requests?: ({ number: number; base?: { ref?: string | null } | null } | null)[] | null;
 }
 
-function toRunMetadata(run: WorkflowRunLike, durationMs: number, runnerOs: RunMetadata['runnerOs']): RunMetadata {
+interface Timing {
+  readonly durationMs: number;
+  readonly runnerOs: RunMetadata['runnerOs'];
+  readonly durationSource: DurationSource;
+  readonly jobs: readonly JobRecord[];
+}
+
+function toRunMetadata(run: WorkflowRunLike, timing: Timing): RunMetadata {
   const startedAt = run.run_started_at ?? new Date().toISOString();
   const pullRequest = run.pull_requests?.find((pr) => pr && typeof pr.number === 'number') ?? null;
 
   return {
     externalId: String(run.id),
-    workflowName: run.name ?? 'unknown workflow',
+    workflowName: run.name ?? UNKNOWN_WORKFLOW,
     runAttempt: run.run_attempt ?? 1,
     commitSha: run.head_sha,
-    branch: run.head_branch ?? 'unknown',
+    branch: run.head_branch ?? UNKNOWN_BRANCH,
     pullRequestNumber: pullRequest?.number ?? null,
-    runnerOs,
-    durationMs,
-    conclusion: run.conclusion ?? 'unknown',
+    runnerOs: timing.runnerOs,
+    durationMs: timing.durationMs,
+    durationSource: timing.durationSource,
+    conclusion: run.conclusion ?? UNKNOWN_CONCLUSION,
     startedAt,
   };
 }
@@ -52,7 +62,6 @@ function wallClockDurationMs(run: WorkflowRunLike): number {
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
   return end - start;
 }
-
 export function createWebhooks(context: AppContext): Webhooks {
   const { config, store, github } = context;
 
@@ -71,9 +80,14 @@ export function createWebhooks(context: AppContext): Webhooks {
 
     // Per-job data yields a far more accurate bill than run wall-clock time,
     // but it is an extra API call that may fail; degrade rather than drop the
-    // run entirely.
-    let durationMs = wallClockDurationMs(run);
-    let runnerOs: RunMetadata['runnerOs'] = 'linux';
+    // run entirely, and record which measurement was used so the report can
+    // say how much confidence its dollar figure deserves.
+    let timing: Timing = {
+      durationMs: wallClockDurationMs(run),
+      runnerOs: 'linux',
+      durationSource: 'wallclock',
+      jobs: [],
+    };
 
     if (octokit) {
       try {
@@ -85,8 +99,12 @@ export function createWebhooks(context: AppContext): Webhooks {
         });
         const summary = summariseJobs(jobs);
         if (summary) {
-          durationMs = summary.durationMs;
-          runnerOs = summary.runnerOs;
+          timing = {
+            durationMs: summary.durationMs,
+            runnerOs: summary.runnerOs,
+            durationSource: 'jobs',
+            jobs: summary.jobs,
+          };
         }
       } catch (error) {
         console.warn(
@@ -96,8 +114,8 @@ export function createWebhooks(context: AppContext): Webhooks {
       }
     }
 
-    const metadata = toRunMetadata(run, durationMs, runnerOs);
-    store.recordRun({ repo, run: metadata, results: [] });
+    const metadata = toRunMetadata(run, timing);
+    store.recordRun({ repo, run: metadata, results: [], jobs: timing.jobs });
 
     if (metadata.pullRequestNumber === null) return;
     if (!config.postPrComments || !octokit) return;

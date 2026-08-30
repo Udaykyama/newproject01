@@ -1,12 +1,13 @@
 import { parseArgs } from 'node:util';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { openDatabase } from './db/index.js';
 import { Store } from './db/store.js';
 import { parseJUnitXml } from './ingest/junit.js';
 import { assessAll, flakyOnly } from './analysis/flaky.js';
-import { buildPullRequestReport } from './analysis/report.js';
+import { buildPullRequestReport, windowStart } from './analysis/report.js';
 import { renderPullRequestComment } from './github/comment.js';
 import { parseRepoSlug } from './api/validate.js';
 import type { RunnerOs, TestResult } from './types.js';
@@ -42,10 +43,22 @@ Ingest options:
 Paths may be JUnit XML files or directories, which are scanned recursively.
 `;
 
+/**
+ * A problem the user can fix — a bad flag, a missing file, an unknown repo.
+ *
+ * Distinguished from a genuine defect so the entrypoint can print one line
+ * instead of a stack trace. A CLI that dumps a stack at someone for forgetting
+ * `--repo` teaches them the tool is broken.
+ */
+export class CliError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CliError';
+  }
+}
+
 function fail(message: string): never {
-  console.error(`error: ${message}`);
-  process.exitCode = 1;
-  throw new Error(message);
+  throw new CliError(message);
 }
 
 /** Collect XML files, expanding directories recursively. */
@@ -114,6 +127,9 @@ function runIngest(values: Record<string, string | boolean | undefined>, positio
       pullRequestNumber: Number.isInteger(prRaw) && prRaw > 0 ? prRaw : null,
       runnerOs: (typeof values.runner === 'string' ? values.runner : 'linux') as RunnerOs,
       durationMs: num(values.duration as string | undefined, totalDuration),
+      // Locally we only ever know what the report claimed, never what the
+      // provider billed.
+      durationSource: 'reported',
       conclusion:
         typeof values.conclusion === 'string' ? values.conclusion : failed ? 'failure' : 'success',
       startedAt:
@@ -124,12 +140,14 @@ function runIngest(values: Record<string, string | boolean | undefined>, positio
     results,
   });
 
-  if (!outcome.inserted) {
+  if (outcome.resultsRecorded === 0) {
     console.log(`run already recorded (${files.length} file(s) skipped) — nothing to do`);
     return;
   }
 
-  console.log(`recorded ${results.length} test result(s) from ${files.length} file(s) for ${repo.owner}/${repo.name}`);
+  console.log(
+    `recorded ${outcome.resultsRecorded} test result(s) from ${files.length} file(s) for ${repo.owner}/${repo.name}`,
+  );
 }
 
 function runFlaky(values: Record<string, string | boolean | undefined>): void {
@@ -142,7 +160,12 @@ function runFlaky(values: Record<string, string | boolean | undefined>): void {
   const repoId = store.findRepo(repo);
   if (repoId === null) fail(`no data recorded for ${repo.owner}/${repo.name}`);
 
-  const all = assessAll(store.recentObservations(repoId, config.flake.windowSize), config.flake);
+  const observations = store.recentObservations(
+    repoId,
+    config.flake.windowSize,
+    windowStart(config.flake.windowDays),
+  );
+  const all = assessAll(observations, config.flake);
   const shown = values.all === true ? all : flakyOnly(all);
 
   if (shown.length === 0) {
@@ -195,26 +218,34 @@ export function run(argv: readonly string[]): void {
     return;
   }
 
-  const { values, positionals } = parseArgs({
-    args: [...rest],
-    allowPositionals: true,
-    options: {
-      repo: { type: 'string' },
-      sha: { type: 'string' },
-      'run-id': { type: 'string' },
-      attempt: { type: 'string' },
-      workflow: { type: 'string' },
-      branch: { type: 'string' },
-      pr: { type: 'string' },
-      runner: { type: 'string' },
-      duration: { type: 'string' },
-      started: { type: 'string' },
-      conclusion: { type: 'string' },
-      base: { type: 'string' },
-      all: { type: 'boolean' },
-      markdown: { type: 'boolean' },
-    },
-  });
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: [...rest],
+      allowPositionals: true,
+      options: {
+        repo: { type: 'string' },
+        sha: { type: 'string' },
+        'run-id': { type: 'string' },
+        attempt: { type: 'string' },
+        workflow: { type: 'string' },
+        branch: { type: 'string' },
+        pr: { type: 'string' },
+        runner: { type: 'string' },
+        duration: { type: 'string' },
+        started: { type: 'string' },
+        conclusion: { type: 'string' },
+        base: { type: 'string' },
+        all: { type: 'boolean' },
+        markdown: { type: 'boolean' },
+      },
+    });
+  } catch (error) {
+    // An unrecognised or malformed flag is a typo, not a crash.
+    fail(error instanceof Error ? error.message : 'could not parse arguments');
+  }
+
+  const { values, positionals } = parsed;
 
   switch (command) {
     case 'ingest':
@@ -229,8 +260,45 @@ export function run(argv: readonly string[]): void {
     default:
       console.error(`unknown command: ${command}\n`);
       console.log(USAGE);
-      process.exitCode = 1;
+      throw new CliError(`unknown command: ${command}`);
   }
 }
 
-run(process.argv.slice(2));
+/**
+ * Run the CLI and return the process exit code.
+ *
+ * Separate from `run` so tests can exercise every command without the process
+ * exiting underneath them, and so a genuine defect still surfaces its stack
+ * trace rather than being flattened into a one-line message.
+ */
+export function main(argv: readonly string[]): number {
+  try {
+    run(argv);
+    return 0;
+  } catch (error) {
+    if (error instanceof CliError) {
+      console.error(`error: ${error.message}`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Only take over the process when this module *is* the program.
+ *
+ * Importing the CLI from a test must not run a command or set an exit code.
+ */
+function isEntrypoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return resolve(invoked) === resolve(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
+  process.exitCode = main(process.argv.slice(2));
+}

@@ -17,6 +17,7 @@ function payload(overrides: Partial<RunIngestPayload['run']> = {}, results: Test
       pullRequestNumber: null,
       runnerOs: 'linux',
       durationMs: 60_000,
+      durationSource: 'reported',
       conclusion: 'success',
       startedAt: '2026-01-01T00:00:00.000Z',
       ...overrides,
@@ -156,6 +157,149 @@ describe('Store', () => {
     expect(store.recentObservations(store.findRepo(REPO)!, 50)).toHaveLength(0);
   });
 
+  /**
+   * The ingest endpoint and the workflow_run webhook write the *same* row: one
+   * carries the test results, the other the duration GitHub actually billed.
+   * Whichever arrives second used to be discarded, which pinned every run at
+   * either zero duration or zero results depending on delivery order — and
+   * therefore priced every pull request at the one-minute floor.
+   */
+  describe('merging the two producers of a run row', () => {
+    it('takes the webhook duration when results were ingested first', () => {
+      store.recordRun(payload({ durationMs: 0, durationSource: 'reported' }, [test('a')]));
+      const second = store.recordRun(
+        payload({ durationMs: 600_000, durationSource: 'jobs' }, []),
+      );
+
+      const repoId = store.findRepo(REPO)!;
+      const [run] = store.runsForBranch(repoId, 'main', 10);
+
+      expect(second.inserted).toBe(false);
+      expect(second.resultsRecorded).toBe(0);
+      expect(second.duplicateResults).toBe(false);
+      expect(run?.durationMs).toBe(600_000);
+      expect(run?.durationSource).toBe('jobs');
+      expect(store.recentObservations(repoId, 50)).toHaveLength(1);
+    });
+
+    it('keeps the webhook duration when results are ingested second', () => {
+      store.recordRun(payload({ durationMs: 600_000, durationSource: 'jobs' }, []));
+      const second = store.recordRun(
+        payload({ durationMs: 0, durationSource: 'reported' }, [test('a')]),
+      );
+
+      const repoId = store.findRepo(REPO)!;
+      const [run] = store.runsForBranch(repoId, 'main', 10);
+
+      expect(second.inserted).toBe(false);
+      expect(second.resultsRecorded).toBe(1);
+      expect(second.duplicateResults).toBe(false);
+      expect(run?.durationMs).toBe(600_000);
+      expect(run?.durationSource).toBe('jobs');
+      expect(store.recentObservations(repoId, 50)).toHaveLength(1);
+    });
+
+    it('reports a true replay as a duplicate and stores nothing twice', () => {
+      store.recordRun(payload({}, [test('a')]));
+      const replay = store.recordRun(payload({}, [test('a')]));
+
+      const repoId = store.findRepo(REPO)!;
+
+      expect(replay.inserted).toBe(false);
+      expect(replay.resultsRecorded).toBe(0);
+      expect(replay.duplicateResults).toBe(true);
+      expect(store.recentObservations(repoId, 50)).toHaveLength(1);
+      expect(store.runsForBranch(repoId, 'main', 10)).toHaveLength(1);
+    });
+
+    it('never lets a zero duration overwrite a real measurement', () => {
+      store.recordRun(payload({ durationMs: 600_000, durationSource: 'jobs' }, []));
+      store.recordRun(payload({ durationMs: 0, durationSource: 'jobs' }, []));
+
+      expect(store.runsForBranch(store.findRepo(REPO)!, 'main', 10)[0]?.durationMs).toBe(600_000);
+    });
+
+    it('keeps the earliest start so delivery order cannot reorder history', () => {
+      store.recordRun(payload({ startedAt: '2026-01-01T00:10:00.000Z' }, []));
+      store.recordRun(payload({ startedAt: '2026-01-01T00:00:00.000Z' }, []));
+
+      expect(store.runsForBranch(store.findRepo(REPO)!, 'main', 10)[0]?.startedAt).toBe(
+        '2026-01-01T00:00:00.000Z',
+      );
+    });
+
+    it('does not let an inferred runner os clobber a job-derived one', () => {
+      store.recordRun(payload({ runnerOs: 'macos', durationMs: 600_000, durationSource: 'jobs' }, []));
+      store.recordRun(payload({ runnerOs: 'linux', durationMs: 300_000, durationSource: 'wallclock' }, []));
+
+      expect(store.runsForBranch(store.findRepo(REPO)!, 'main', 10)[0]?.runnerOs).toBe('macos');
+    });
+
+    it('fills in facts the first producer did not know', () => {
+      store.recordRun(payload({ workflowName: 'unknown workflow', pullRequestNumber: null }, []));
+      store.recordRun(payload({ workflowName: 'ci', pullRequestNumber: 42 }, []));
+
+      const [run] = store.runsForBranch(store.findRepo(REPO)!, 'main', 10);
+      expect(run?.workflowName).toBe('ci');
+      expect(run?.pullRequestNumber).toBe(42);
+    });
+
+    it('merges per-job billing rows without duplicating them', () => {
+      const jobs = [
+        { externalId: 'j1', name: 'build', runnerOs: 'linux' as const, durationMs: 120_000 },
+        { externalId: 'j2', name: 'e2e', runnerOs: 'macos' as const, durationMs: 300_000 },
+      ];
+
+      store.recordRun({ ...payload({}, [test('a')]) });
+      store.recordRun({ ...payload({ durationMs: 420_000, durationSource: 'jobs' }, []), jobs });
+      store.recordRun({ ...payload({ durationMs: 420_000, durationSource: 'jobs' }, []), jobs });
+
+      const [run] = store.runsForBranch(store.findRepo(REPO)!, 'main', 10);
+      expect(run?.jobs).toHaveLength(2);
+      expect(run?.jobs.map((job) => job.runnerOs).sort()).toEqual(['linux', 'macos']);
+    });
+  });
+
+  it('keeps the first measurement when a redelivery has the same provenance', () => {
+    store.recordRun(payload({ durationMs: 120_000, durationSource: 'wallclock' }, [test('a')]));
+    store.recordRun(payload({ durationMs: 999_000, durationSource: 'wallclock' }, []));
+
+    expect(store.runsForBranch(store.findRepo(REPO)!, 'main', 10)[0]?.durationMs).toBe(120_000);
+  });
+
+  it('attaches jobs only for the runs it returned', () => {
+    const jobs = [{ externalId: 'j1', name: 'build', runnerOs: 'linux' as const, durationMs: 60_000 }];
+
+    store.recordRun({ ...payload({ externalId: 'old', startedAt: '2026-01-01T00:00:00.000Z' }, []), jobs });
+    store.recordRun({ ...payload({ externalId: 'new', startedAt: '2026-01-02T00:00:00.000Z' }, []), jobs });
+
+    const runs = store.runsForBranch(store.findRepo(REPO)!, 'main', 1);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.externalId).toBe('new');
+    expect(runs[0]?.jobs).toHaveLength(1);
+  });
+
+  it('excludes retries from the baseline sample when asked', () => {
+    store.recordRun(payload({ runAttempt: 1 }, []));
+    store.recordRun(payload({ runAttempt: 2 }, []));
+
+    const repoId = store.findRepo(REPO)!;
+
+    expect(store.runsForBranch(repoId, 'main', 10)).toHaveLength(2);
+    expect(store.runsForBranch(repoId, 'main', 10, { excludeRetries: true })).toHaveLength(1);
+  });
+
+  it('bounds observations by time as well as by count', () => {
+    store.recordRun(payload({ externalId: 'old', startedAt: '2020-01-01T00:00:00.000Z' }, [test('a')]));
+    store.recordRun(payload({ externalId: 'new', startedAt: '2026-01-01T00:00:00.000Z' }, [test('a')]));
+
+    const repoId = store.findRepo(REPO)!;
+
+    expect(store.recentObservations(repoId, 50)).toHaveLength(2);
+    expect(store.recentObservations(repoId, 50, '2025-01-01T00:00:00.000Z')).toHaveLength(1);
+  });
+
   describe('quarantine', () => {
     it('adds, lists and removes entries', () => {
       const repoId = store.upsertRepo(REPO);
@@ -182,6 +326,25 @@ describe('Store', () => {
 
     it('reports removal of an entry that was never there', () => {
       expect(store.removeQuarantine(store.upsertRepo(REPO), 'Suite', 'ghost')).toBe(false);
+    });
+
+    it('records who quarantined a test and when it lapses', () => {
+      const repoId = store.upsertRepo(REPO);
+
+      store.quarantine(repoId, 'Suite', 'flaky', 'ENG-1', 'octocat', '2027-01-01T00:00:00.000Z');
+
+      expect(store.listQuarantined(repoId)).toEqual([
+        expect.objectContaining({ createdBy: 'octocat', expiresAt: '2027-01-01T00:00:00.000Z' }),
+      ]);
+    });
+
+    it('stops listing an entry once it has expired', () => {
+      const repoId = store.upsertRepo(REPO);
+
+      store.quarantine(repoId, 'Suite', 'stale', null, 'octocat', '2026-01-01T00:00:00.000Z');
+
+      expect(store.listQuarantined(repoId, '2025-12-31T00:00:00.000Z')).toHaveLength(1);
+      expect(store.listQuarantined(repoId, '2026-01-02T00:00:00.000Z')).toHaveLength(0);
     });
   });
 });

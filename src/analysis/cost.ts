@@ -1,6 +1,6 @@
 import type { CostRates } from '../config.js';
 import type { Observation, RunRecord } from '../db/store.js';
-import { FAILING_STATUSES, type RunnerOs } from '../types.js';
+import { FAILING_STATUSES, type DurationSource, type RunnerOs } from '../types.js';
 import { testKey } from './identity.js';
 
 /**
@@ -30,6 +30,10 @@ export interface RunCost {
   readonly usd: number;
   /** Attempt > 1: this run is a re-execution of work already paid for. */
   readonly isRetry: boolean;
+  /** How the underlying duration was measured. */
+  readonly durationSource: DurationSource;
+  /** True when the price came from per-job rows rather than a run total. */
+  readonly pricedPerJob: boolean;
 }
 
 export interface WorkflowCost {
@@ -47,6 +51,27 @@ export interface CostSummary {
   /** Upper bound on waste: everything spent on re-runs, whatever the cause. */
   readonly retryUsd: number;
   readonly byWorkflow: readonly WorkflowCost[];
+  readonly confidence: CostConfidence;
+}
+
+/**
+ * How much the dollar figure can be trusted.
+ *
+ * An estimate labelled as an estimate survives a procurement conversation; one
+ * that is not labelled does not survive the first time someone checks it
+ * against their invoice.
+ */
+export interface CostConfidence {
+  /** The weakest provenance among the priced runs. */
+  readonly weakestSource: DurationSource;
+  /** Runs priced from per-job rows — these reproduce the invoice. */
+  readonly pricedPerJob: number;
+  /** Runs priced from wall-clock time, which under-reports parallel jobs. */
+  readonly wallClockRuns: number;
+  /** Runs priced from a duration the uploading client asserted. */
+  readonly reportedRuns: number;
+  /** True when every run was priced from per-job billing data. */
+  readonly exact: boolean;
 }
 
 export interface BaselineComparison {
@@ -76,16 +101,40 @@ function rateFor(os: RunnerOs, rates: CostRates): number {
   }
 }
 
+/** GitHub bills whole minutes, rounded up, and it rounds up per job. */
+function billableMinutesFor(durationMs: number): number {
+  return Math.max(1, Math.ceil(Math.max(0, durationMs) / MS_PER_MINUTE));
+}
+
 /**
  * Price a single run.
  *
- * GitHub bills whole minutes, rounding each job up, so a 10-second job costs a
- * full minute. Rounding up here reproduces the real invoice instead of a
- * flattering underestimate. We price at run granularity in v1; for runs with
- * many short parallel jobs this under-reports, which is noted in the README.
+ * When per-job rows are available each job is priced at its own OS rate and
+ * rounded up independently, which is exactly how the invoice is computed: a run
+ * with one 30-second macOS job and one 30-second Linux job costs a full minute
+ * of each, not two minutes of whichever ran longer. Rates differ by 10× across
+ * runner families, so collapsing them is the single largest error available to
+ * make here.
+ *
+ * Without job rows the run total is used, which under-reports runs with many
+ * parallel jobs. {@link CostSummary.confidence} reports when that happened.
  */
 export function priceRun(run: RunRecord, rates: CostRates): RunCost {
-  const billableMinutes = Math.max(1, Math.ceil(Math.max(0, run.durationMs) / MS_PER_MINUTE));
+  const pricedPerJob = run.jobs.length > 0;
+
+  let billableMinutes = 0;
+  let usd = 0;
+
+  if (pricedPerJob) {
+    for (const job of run.jobs) {
+      const minutes = billableMinutesFor(job.durationMs);
+      billableMinutes += minutes;
+      usd += minutes * rateFor(job.runnerOs, rates);
+    }
+  } else {
+    billableMinutes = billableMinutesFor(run.durationMs);
+    usd = billableMinutes * rateFor(run.runnerOs, rates);
+  }
 
   return {
     externalId: run.externalId,
@@ -93,8 +142,33 @@ export function priceRun(run: RunRecord, rates: CostRates): RunCost {
     runAttempt: run.runAttempt,
     runnerOs: run.runnerOs,
     billableMinutes,
-    usd: billableMinutes * rateFor(run.runnerOs, rates),
+    usd,
     isRetry: run.runAttempt > 1,
+    durationSource: run.durationSource,
+    pricedPerJob,
+  };
+}
+
+/** Weakest provenance wins: a summary is only as good as its worst input. */
+function summariseConfidence(costs: readonly RunCost[]): CostConfidence {
+  let wallClockRuns = 0;
+  let reportedRuns = 0;
+  let pricedPerJob = 0;
+
+  for (const cost of costs) {
+    if (cost.pricedPerJob) pricedPerJob += 1;
+    if (cost.durationSource === 'wallclock') wallClockRuns += 1;
+    if (cost.durationSource === 'reported') reportedRuns += 1;
+  }
+
+  const weakestSource: DurationSource = reportedRuns > 0 ? 'reported' : wallClockRuns > 0 ? 'wallclock' : 'jobs';
+
+  return {
+    weakestSource,
+    pricedPerJob,
+    wallClockRuns,
+    reportedRuns,
+    exact: costs.length > 0 && pricedPerJob === costs.length,
   };
 }
 
@@ -131,6 +205,7 @@ export function summariseCosts(runs: readonly RunRecord[], rates: CostRates): Co
     byWorkflow: [...byWorkflow.entries()]
       .map(([workflowName, entry]) => ({ workflowName, ...entry }))
       .sort((a, b) => b.usd - a.usd),
+    confidence: summariseConfidence(costs),
   };
 }
 
@@ -151,17 +226,50 @@ export function medianRunCostUsd(runs: readonly RunRecord[], rates: CostRates): 
   return ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
-/** Compare this PR's spend against the typical cost of a run on the base branch. */
+function groupByWorkflow(runs: readonly RunRecord[]): Map<string, RunRecord[]> {
+  const groups = new Map<string, RunRecord[]>();
+  for (const run of runs) {
+    const bucket = groups.get(run.workflowName);
+    if (bucket) {
+      bucket.push(run);
+    } else {
+      groups.set(run.workflowName, [run]);
+    }
+  }
+  return groups;
+}
+
+/**
+ * Compare this PR's spend against the typical cost of the same work on the base
+ * branch.
+ *
+ * The comparison is made per workflow and then summed. A repo-wide median would
+ * let an unrelated heavy job — a nightly build, a release pipeline — set the
+ * bar for every pull request, so a PR that only ran the fast lint workflow
+ * would look like a saving and a PR that doubled the test suite could hide
+ * inside the noise.
+ *
+ * Workflows the PR ran that have no base-branch history contribute nothing to
+ * the baseline: inventing a number for them would manufacture a delta out of
+ * missing data. Callers can see this in {@link CostSummary.confidence}.
+ */
 export function compareToBaseline(
   prRuns: readonly RunRecord[],
   baselineRuns: readonly RunRecord[],
   rates: CostRates,
 ): BaselineComparison {
   const currentUsd = summariseCosts(prRuns, rates).usd;
-  // The baseline is scaled to the number of runs this PR triggered so we
-  // compare like with like: a PR that ran CI five times should not look
-  // expensive relative to a single baseline build.
-  const baselineUsd = medianRunCostUsd(baselineRuns, rates) * Math.max(1, prRuns.length);
+  const baselineByWorkflow = groupByWorkflow(baselineRuns);
+
+  // Scaled to the number of runs this PR triggered *of that workflow*, so a PR
+  // that ran CI five times is not judged against a single baseline build.
+  let baselineUsd = 0;
+  for (const [workflowName, runs] of groupByWorkflow(prRuns)) {
+    const history = baselineByWorkflow.get(workflowName);
+    if (!history || history.length === 0) continue;
+    baselineUsd += medianRunCostUsd(history, rates) * runs.length;
+  }
+
   const deltaUsd = currentUsd - baselineUsd;
 
   return {

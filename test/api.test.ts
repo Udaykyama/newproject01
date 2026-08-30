@@ -64,6 +64,17 @@ async function ingest(body: unknown, token: string | null = TOKEN): Promise<Resp
   });
 }
 
+/**
+ * Runs are dated relative to now, not to a fixed literal: detection has a
+ * time-bounded window, so a hard-coded date would quietly stop matching once
+ * the calendar moved past it.
+ */
+const NOW = Date.now();
+
+function recentIso(minutesAgo: number): string {
+  return new Date(NOW - minutesAgo * 60_000).toISOString();
+}
+
 function run(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     externalId: 'run-1',
@@ -74,7 +85,7 @@ function run(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     runnerOs: 'linux',
     durationMs: 600_000,
     conclusion: 'success',
-    startedAt: '2026-01-01T00:00:00.000Z',
+    startedAt: recentIso(60),
     ...overrides,
   };
 }
@@ -164,6 +175,42 @@ describe('POST /v1/ingest/junit', () => {
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({ testsIngested: 1 });
   });
+
+  it('still records results when the webhook created the row first', async () => {
+    // The webhook writes the same row to carry duration. `duplicate` must
+    // describe the results, not the row, or CI reports a successful upload
+    // that stored nothing.
+    context.store.recordRun({
+      repo: { owner: 'acme', name: 'widgets' },
+      run: {
+        externalId: 'webhook-first',
+        workflowName: 'ci',
+        runAttempt: 1,
+        commitSha: 'abc1234',
+        branch: 'main',
+        pullRequestNumber: null,
+        runnerOs: 'linux',
+        durationMs: 600_000,
+        durationSource: 'jobs',
+        conclusion: 'success',
+        startedAt: recentIso(60),
+      },
+      results: [],
+    });
+
+    const response = await ingest({
+      repo: 'acme/widgets',
+      run: run({ externalId: 'webhook-first' }),
+      junitXml: junit([{ name: 'alpha' }]),
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      recorded: true,
+      duplicate: false,
+      testsIngested: 1,
+    });
+  });
 });
 
 describe('flake and cost reporting', () => {
@@ -216,6 +263,27 @@ describe('flake and cost reporting', () => {
     const body = (await response.json()) as { tests: { name: string }[] };
 
     expect(body.tests.map((entry) => entry.name).sort()).toEqual(['steady', 'wobbly']);
+  });
+
+  it('paginates the flake list so a monorepo cannot return everything', async () => {
+    const first = await fetch(`${baseUrl}/v1/repos/flaky/project/flaky?includeStable=true&limit=1`);
+    const firstBody = (await first.json()) as { tests: { name: string }[]; total: number; offset: number };
+
+    expect(firstBody.total).toBe(2);
+    expect(firstBody.tests).toHaveLength(1);
+
+    const second = await fetch(
+      `${baseUrl}/v1/repos/flaky/project/flaky?includeStable=true&limit=1&offset=1`,
+    );
+    const secondBody = (await second.json()) as { tests: { name: string }[] };
+
+    expect(secondBody.tests).toHaveLength(1);
+    expect(secondBody.tests[0]?.name).not.toBe(firstBody.tests[0]?.name);
+  });
+
+  it('rejects a nonsensical page bound rather than silently ignoring it', async () => {
+    const response = await fetch(`${baseUrl}/v1/repos/flaky/project/flaky?limit=-1`);
+    expect(response.status).toBe(400);
   });
 
   it('builds a pull request report with cost, flakes and waste', async () => {
@@ -297,6 +365,35 @@ describe('quarantine endpoints', () => {
     const listed = await fetch(`${baseUrl}/v1/repos/flaky/project/flaky`);
     const body = (await listed.json()) as { quarantined: { name: string }[] };
     expect(body.quarantined.map((entry) => entry.name)).toEqual(['wobbly']);
+  });
+
+  it('records who quarantined a test and when it lapses', async () => {
+    const created = await fetch(`${baseUrl}/v1/repos/flaky/project/quarantine`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeader(TOKEN) },
+      body: JSON.stringify({
+        suite: 'Suite',
+        name: 'wobbly',
+        reason: 'ENG-1',
+        createdBy: 'octocat',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }),
+    });
+
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      quarantined: { createdBy: 'octocat', expiresAt: '2099-01-01T00:00:00.000Z' },
+    });
+  });
+
+  it('rejects an expiry that is not a timestamp', async () => {
+    const response = await fetch(`${baseUrl}/v1/repos/flaky/project/quarantine`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeader(TOKEN) },
+      body: JSON.stringify({ suite: 'Suite', name: 'wobbly', expiresAt: 'next tuesday' }),
+    });
+
+    expect(response.status).toBe(400);
   });
 
   it('removes a quarantine and 404s when it is already gone', async () => {

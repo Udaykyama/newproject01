@@ -1,5 +1,5 @@
-import type { PullRequestReport } from '../analysis/report.js';
-import type { FlakeAssessment } from '../types.js';
+import type { PullRequestReport, FlakeFinding } from '../analysis/report.js';
+import type { CostConfidence } from '../analysis/cost.js';
 
 /**
  * Hidden marker used to find and update our previous comment instead of
@@ -48,11 +48,11 @@ function truncate(value: string, max = 80): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
-function verdictLabel(assessment: FlakeAssessment): string {
+function verdictLabel(assessment: FlakeFinding): string {
   return assessment.verdict === 'flaky_confirmed' ? 'confirmed' : 'suspected';
 }
 
-function evidence(assessment: FlakeAssessment): string {
+function evidence(assessment: FlakeFinding): string {
   if (assessment.contradictoryCommits > 0) {
     const commits = assessment.contradictoryCommits;
     return `passed and failed on the same commit (${commits}×)`;
@@ -60,7 +60,7 @@ function evidence(assessment: FlakeAssessment): string {
   return `flips ${(assessment.flipRate * 100).toFixed(0)}% of runs, ${assessment.failures}/${assessment.totalRuns} failed`;
 }
 
-function renderFlakeTable(flakes: readonly FlakeAssessment[]): string {
+function renderFlakeTable(flakes: readonly FlakeFinding[]): string {
   const rows = flakes
     .slice(0, MAX_FLAKES_LISTED)
     .map((flake) => {
@@ -73,6 +73,33 @@ function renderFlakeTable(flakes: readonly FlakeAssessment[]): string {
     flakes.length > MAX_FLAKES_LISTED ? `\n\n_…and ${flakes.length - MAX_FLAKES_LISTED} more._` : '';
 
   return ['| Test | Verdict | Score | Evidence |', '| --- | --- | --: | --- |', rows].join('\n') + overflow;
+}
+
+/**
+ * State how the cost was measured.
+ *
+ * A dollar figure with no provenance gets checked against a real invoice once
+ * and never trusted again. Saying which runs were priced from per-job billing
+ * data and which were estimated is what makes the number survive that check.
+ */
+function confidenceNote(confidence: CostConfidence): string | null {
+  if (confidence.exact) return null;
+
+  const caveats: string[] = [];
+  if (confidence.reportedRuns > 0) {
+    caveats.push(
+      `${confidence.reportedRuns} run${confidence.reportedRuns === 1 ? '' : 's'} priced from a duration reported by the CI job`,
+    );
+  }
+  if (confidence.wallClockRuns > 0) {
+    caveats.push(
+      `${confidence.wallClockRuns} from run wall-clock time, which under-reports parallel jobs`,
+    );
+  }
+
+  if (caveats.length === 0) return null;
+
+  return `- **Estimate:** ${caveats.join('; ')}. Install the GitHub App for per-job billing data.`;
 }
 
 function renderCostSection(report: PullRequestReport): string {
@@ -103,23 +130,53 @@ function renderCostSection(report: PullRequestReport): string {
     lines.push(`- **By workflow:** ${breakdown}`);
   }
 
+  const note = confidenceNote(cost.confidence);
+  if (note) lines.push(note);
+
   return lines.join('\n');
 }
 
+/**
+ * Render the flake section.
+ *
+ * New findings and already-quarantined ones are kept in separate tables. A
+ * reviewer needs to know what changed; mixing a test somebody already dealt
+ * with into that list is how a report stops being read.
+ */
 function renderFlakeSection(report: PullRequestReport): string {
-  const { flakes, waste } = report;
+  const { waste } = report;
+  const outstanding = report.flakes.filter((flake) => !flake.quarantined);
+  const handled = report.flakes.filter((flake) => flake.quarantined);
 
-  if (flakes.length === 0) {
-    return ['### Flaky tests', '', 'None detected in this PR’s runs. ✅'].join('\n');
+  const lines: string[] = ['### Flaky tests', ''];
+
+  if (outstanding.length === 0) {
+    lines.push(
+      handled.length > 0
+        ? 'No unhandled flaky tests in this PR’s runs. ✅'
+        : 'None detected in this PR’s runs. ✅',
+    );
+  } else {
+    const confirmed = outstanding.filter((flake) => flake.verdict === 'flaky_confirmed').length;
+    lines.push(
+      confirmed > 0
+        ? `${outstanding.length} flaky test${outstanding.length === 1 ? '' : 's'} touched by this PR (${confirmed} confirmed non-deterministic).`
+        : `${outstanding.length} suspected flaky test${outstanding.length === 1 ? '' : 's'} touched by this PR.`,
+      '',
+      renderFlakeTable(outstanding),
+    );
   }
 
-  const confirmed = flakes.filter((flake) => flake.verdict === 'flaky_confirmed').length;
-  const headline =
-    confirmed > 0
-      ? `${flakes.length} flaky test${flakes.length === 1 ? '' : 's'} touched by this PR (${confirmed} confirmed non-deterministic).`
-      : `${flakes.length} suspected flaky test${flakes.length === 1 ? '' : 's'} touched by this PR.`;
-
-  const lines = ['### Flaky tests', '', headline, '', renderFlakeTable(flakes)];
+  if (handled.length > 0) {
+    lines.push(
+      '',
+      `<details><summary>${handled.length} already quarantined</summary>`,
+      '',
+      renderFlakeTable(handled),
+      '',
+      '</details>',
+    );
+  }
 
   if (waste.runCount > 0) {
     lines.push(
