@@ -33,3 +33,14 @@ export function webhookRateLimiter(limit: number): RateLimitRequestHandler {
 export function ingestRateLimiter(limit: number): RateLimitRequestHandler {
   return createLimiter(limit, 'too many requests, slow down');
 }
+
+/**
+ * Guards read-token checks once `REQUIRE_READ_AUTH` is on.
+ *
+ * A separate counter from the ingest limiter: read traffic and upload traffic
+ * are unrelated, and letting either exhaust the other's budget would turn a
+ * busy CI fleet into an outage for the dashboard, or vice versa.
+ */
+export function readRateLimiter(limit: number): RateLimitRequestHandler {
+  return createLimiter(limit, 'too many requests, slow down');
+}

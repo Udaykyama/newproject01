@@ -1,0 +1,15 @@
+{
+  "_comment": "Ground truth for `ci-ledger precision`. Identities are the suite (JUnit classname) and name emitted by test/flake-canary.test.ts, which is deliberately non-deterministic and ships a stable control beside it. Every other test in this repository is left unlabelled on purpose: an unlabelled finding is reported but never scored, so the number stays honest.",
+  "flaky": [
+    {
+      "suite": "test/flake-canary.test.ts",
+      "name": "flake canary > fails about half the time on purpose"
+    }
+  ],
+  "stable": [
+    {
+      "suite": "test/flake-canary.test.ts",
+      "name": "flake canary > is stable, as a control"
+    }
+  ]
+}

@@ -7,6 +7,13 @@ Every pull request gets one comment that answers two questions nobody can answer
 > **This PR cost $2.41 in CI, +38% vs `main`.**
 > **$0.84 of that was wasted re-running one flaky test.**
 
+> **This repository holds two unrelated things.** Everything outside
+> [`ai-ops-hyderabad/`](ai-ops-hyderabad/) is `ci-ledger`, the product. That folder is a
+> business plan for an unrelated consultancy, kept here only because it had nowhere else to go;
+> it is self-contained and carries [its own extraction
+> instructions](ai-ops-hyderabad/README.md#how-to-move-this-into-its-own-repository). Splitting
+> it out is a prerequisite for anyone doing diligence on either.
+
 ---
 
 ## Why this project
@@ -238,10 +245,12 @@ overwrites the weaker measurement.
 | `GET` | `/healthz` | — | Liveness probe |
 | `POST` | `/webhooks/github` | HMAC signature | `workflow_run.completed` ingestion |
 | `POST` | `/v1/ingest/junit` | Ingest token | Upload a run + JUnit XML (or normalised results) |
-| `GET` | `/v1/repos/:owner/:repo/flaky` | — | Ranked flake list (`?includeStable=true`, `?limit=`, `?offset=`) |
-| `GET` | `/v1/repos/:owner/:repo/pulls/:n/report` | — | Cost + flake report (`?format=markdown`) |
+| `GET` | `/v1/repos/:owner/:repo/flaky` | Read token* | Ranked flake list (`?includeStable=true`, `?limit=`, `?offset=`) |
+| `GET` | `/v1/repos/:owner/:repo/pulls/:n/report` | Read token* | Cost + flake report (`?format=markdown`) |
 | `POST` | `/v1/repos/:owner/:repo/quarantine` | Ingest token | Quarantine a test |
 | `DELETE` | `/v1/repos/:owner/:repo/quarantine` | Ingest token | Lift a quarantine |
+
+\* Only when `REQUIRE_READ_AUTH=true`. See [Read tokens](#read-tokens).
 
 Ingestion is **idempotent** on `(repo, run id, attempt)`: test results are written once and
 only once per run, because webhooks are delivered at least once and double-counting would
@@ -328,6 +337,34 @@ It exists because a detector that never fires is indistinguishable from a health
 labelled positive on a real repository, "found no flakes" can be told apart from "found
 nothing".
 
+Its labels live in [`test/flake-canary.labels.json`](test/flake-canary.labels.json), and turn
+into a measurement:
+
+```bash
+ci-ledger precision --repo Udaykyama/newproject01 --labels test/flake-canary.labels.json
+```
+
+```
+precision 100.0% · recall 100.0% over 2 labelled test(s)
+  confirmed-verdict precision: 100.0%
+  tp 1 · fp 0 · fn 0 · tn 1
+  flagged but unlabelled (not scored): 3
+```
+
+*(Shape of the output, not a published result — Milestone 1 is the number, once there is
+enough canary history to stand behind it.)*
+
+Three properties keep that number honest:
+
+- Only **labelled** tests are scored. A flagged test nobody labelled is reported as unlabelled,
+  never counted as correct — a precision figure that assumes its own findings are right is a
+  tautology, not a measurement.
+- A label with **no observations** in the window is listed, not counted as a miss. The detector
+  is not charged for data that never arrived.
+- `flaky_confirmed` is scored **separately**. That verdict rests on a contradiction at a single
+  commit, so anything below 100% there is a defect in the detector, not a tuning problem — and
+  averaging it together with the statistical guesses would hide exactly that.
+
 ### Deployment
 
 ```bash
@@ -353,9 +390,10 @@ than silent data loss on the next deploy.
   unauthenticated ingest endpoint would let anyone poison another repository's statistics.
 - Endpoints that verify a secret — the webhook route and the token-authenticated ingest and
   quarantine routes — are rate limited per client IP so the secret cannot be brute-forced. The
-  limiter runs *before* authentication. Tune with `RATE_LIMIT_WEBHOOK_PER_MIN` (default 600) and
-  `RATE_LIMIT_INGEST_PER_MIN` (default 300). Unauthenticated read endpoints are not limited,
-  since they carry no secret to guess.
+  limiter runs *before* authentication. Tune with `RATE_LIMIT_WEBHOOK_PER_MIN` (default 600),
+  `RATE_LIMIT_INGEST_PER_MIN` (default 300) and `RATE_LIMIT_READ_PER_MIN` (default 600). The read
+  limiter is attached only while `REQUIRE_READ_AUTH=true`, because that is exactly when reads
+  begin verifying a secret; an open instance has nothing there to guess.
 - Every response sends `X-Content-Type-Options: nosniff`. Test names arrive from untrusted CI
   reports and are echoed back in JSON and markdown, so browsers must not sniff them as HTML.
 - Markdown table cells escape backslashes before pipes, so a test name cannot break out of the
@@ -366,34 +404,65 @@ than silent data loss on the next deploy.
 - All SQL is parameterised; no caller-supplied value is ever interpolated into a query.
 - Internal error messages are never echoed to clients.
 
-**Read endpoints are unauthenticated, and that is a single-tenant decision.** For a self-hosted
+### Read tokens
+
+**Read endpoints are open by default, and that is a single-tenant decision.** For a self-hosted
 instance behind a team's own network boundary it is the right trade: no token to distribute for
 data the team already owns. It becomes a data leak the moment two tenants share an instance —
-test names, failure counts and CI spend are all readable by anyone who knows the repository
-slug. Per-installation authentication and row-level scoping are therefore a **prerequisite for
-Milestone 2**, not a follow-up to it.
+test names, failure counts and CI spend would all be readable by anyone who knows the repository
+slug.
+
+Set `REQUIRE_READ_AUTH=true` and every read is scoped to a token:
+
+```bash
+ci-ledger token mint --scope acme/widgets --label "acme install"
+ci-ledger token mint --scope acme                # every repository under the owner
+ci-ledger token list
+ci-ledger token revoke --id 3
+```
+
+- Scoping is enforced **on the path**, not in a filter a query could forget: `:owner/:repo` is
+  already the address of every read endpoint, so a token that does not cover the path cannot
+  reach the data behind it.
+- A token scoped to an owner alone covers every repository under it, which is what an
+  organisation-wide App installation grants.
+- Only the **SHA-256 digest** is stored, and the lookup is keyed on it. A stolen database yields
+  no working credentials, and no comparison is ever made over the secret itself.
+- A mis-scoped request is refused from the token's scope and the caller's own path, without
+  consulting the database — so the refusal cannot disclose whether that repository exists here.
+- Tokens are **revoked, not deleted**: "who could read this, and until when" stays answerable
+  after an incident.
+- The ingest token is accepted for reads too. It can already write every repository on the
+  instance, so withholding read access from it would protect nothing.
+- Revoking a token is immediate; there is no cache to expire.
 
 ---
 
 ## Roadmap
 
 **Milestone 1 — prove the wedge on one real repository (this codebase).** In progress: CI runs
-on every PR, emits JUnit and self-ingests, and the flake canary supplies a labelled positive to
-measure precision against. What remains is accumulating enough history to report a precision
-number.
+on every PR, emits JUnit and self-ingests; the flake canary supplies a labelled positive and a
+control; `ci-ledger precision` turns those labels into a number. What remains is accumulating
+enough canary history for that number to mean something.
 
 **Milestone 2 — the GitHub App install.** Marketplace listing, per-installation storage,
-one-click onboarding. This is the distribution moat. Blocked on per-installation authentication
-and row-level scoping for the read endpoints (see Security notes); the container image and
-persistent-volume story are in place.
+one-click onboarding. This is the distribution moat. The authentication half of the blocker is
+now closed — read endpoints take repository-scoped tokens (see [Read tokens](#read-tokens)) and
+the container image and persistent-volume story are in place. What remains is Postgres for a
+shared instance, and the listing itself.
 
 **Milestone 3 — auto-quarantine.** Open a PR that skips a confirmed flake and files a tracking
 issue. This converts the tool from a report into an action, which is what people pay for.
 
 **Milestone 4 — charge from the first user.** Free users teach you nothing about acquirability.
+Pricing is **per repository**, not per seat: the buyer is whoever owns the CI bill, and the
+tool already computes the number that justifies the price. A repository shown $800/month of
+flake-induced waste does not haggle over $99–$199/month. Two buyers, one install — cost
+attribution sells to the engineering manager, quarantine sells to the developers.
 
-Deferred deliberately: multi-tenancy, Postgres, a web dashboard, and non-GitHub CI providers.
-None of them are needed to prove the wedge, and all of them are cheap to add afterwards.
+Deferred deliberately: Postgres, a web dashboard, and non-GitHub CI providers. JUnit already
+makes a new *language* free; a new CI *provider* costs real engineering, so it waits for a
+paying user to ask. None of them are needed to prove the wedge, and all are cheap afterwards.
 
 ---
 

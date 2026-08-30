@@ -29,12 +29,23 @@ export interface RateLimits {
   readonly webhookPerMinute: number;
   /** Max authenticated ingest/quarantine requests per client IP per minute. */
   readonly ingestPerMinute: number;
+  /** Max token-checked read requests per client IP per minute. */
+  readonly readPerMinute: number;
 }
 
 /** Bounds on how much a single read endpoint will return. */
 export interface ReadLimits {
   readonly defaultPageSize: number;
   readonly maxPageSize: number;
+  /**
+   * Whether read endpoints demand a scoped token.
+   *
+   * Off by default, because a self-hosted single-tenant instance owns every
+   * repository it holds and a token would be ceremony. It must be on for any
+   * instance serving more than one tenant: test names, failure counts and CI
+   * spend are otherwise readable by anyone who can guess a repository slug.
+   */
+  readonly requireAuth: boolean;
 }
 
 export interface Config {
@@ -95,10 +106,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     reads: {
       defaultPageSize: Math.max(1, Math.trunc(num(env.READ_DEFAULT_PAGE_SIZE, 100))),
       maxPageSize: Math.max(1, Math.trunc(num(env.READ_MAX_PAGE_SIZE, 500))),
+      requireAuth: str(env.REQUIRE_READ_AUTH)?.toLowerCase() === 'true',
     },
     limits: {
       webhookPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_WEBHOOK_PER_MIN, 600))),
       ingestPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_INGEST_PER_MIN, 300))),
+      readPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_READ_PER_MIN, 600))),
     },
   };
 }

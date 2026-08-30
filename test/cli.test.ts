@@ -183,4 +183,84 @@ describe('ci-ledger CLI', () => {
       expect(() => run(['flaky'])).toThrow(CliError);
     });
   });
+
+  describe('precision', () => {
+    function writeLabels(labels: unknown): string {
+      const path = join(workdir, 'labels.json');
+      writeFileSync(path, JSON.stringify(labels), 'utf8');
+      return path;
+    }
+
+    /** Two attempts at one commit disagree, which is a proven flake. */
+    function ingestContradiction(): void {
+      const failed = writeReport('attempt-1.xml', [{ name: 'wobbly', failed: true }, { name: 'control' }]);
+      const passed = writeReport('attempt-2.xml', [{ name: 'wobbly' }, { name: 'control' }]);
+
+      main(['ingest', '--repo', 'acme/widgets', '--sha', 'abc1234', '--run-id', '1', '--attempt', '1', failed]);
+      main(['ingest', '--repo', 'acme/widgets', '--sha', 'abc1234', '--run-id', '1', '--attempt', '2', passed]);
+    }
+
+    it('scores the detector against labelled tests', () => {
+      ingestContradiction();
+      const labels = writeLabels({
+        flaky: [{ suite: 'Suite', name: 'wobbly' }],
+        stable: [{ suite: 'Suite', name: 'control' }],
+      });
+
+      expect(main(['precision', '--repo', 'acme/widgets', '--labels', labels])).toBe(0);
+      expect(output.join('\n')).toContain('precision 100.0%');
+      expect(output.join('\n')).toContain('confirmed-verdict precision: 100.0%');
+    });
+
+    it('requires a labels file', () => {
+      expect(main(['precision', '--repo', 'acme/widgets'])).toBe(1);
+      expect(errors.join('\n')).toContain('--labels is required');
+    });
+
+    it('explains an unreadable labels file instead of crashing', () => {
+      const path = join(workdir, 'labels.json');
+      writeFileSync(path, '{ not json', 'utf8');
+
+      expect(main(['precision', '--repo', 'acme/widgets', '--labels', path])).toBe(1);
+      expect(errors.join('\n')).toContain('could not read labels');
+    });
+  });
+
+  describe('token', () => {
+    it('mints a scoped token, prints it once, and lists it', () => {
+      expect(main(['token', 'mint', '--scope', 'acme/widgets', '--label', 'install 1'])).toBe(0);
+      const minted = output.join('\n');
+      expect(minted).toContain('cilg_');
+      // Reads are still open until REQUIRE_READ_AUTH is set, and a token that
+      // silently protects nothing is worse than no token.
+      expect(minted).toContain('REQUIRE_READ_AUTH');
+
+      output.length = 0;
+      expect(main(['token', 'list'])).toBe(0);
+      expect(output.join('\n')).toContain('acme/widgets');
+      expect(output.join('\n')).toContain('install 1');
+    });
+
+    it('scopes a token to a whole owner when no repository is given', () => {
+      expect(main(['token', 'mint', '--scope', 'acme'])).toBe(0);
+      expect(output.join('\n')).toContain('acme/*');
+    });
+
+    it('revokes by id and refuses to revoke twice', () => {
+      main(['token', 'mint', '--scope', 'acme/widgets']);
+      expect(main(['token', 'revoke', '--id', '1'])).toBe(0);
+      expect(main(['token', 'revoke', '--id', '1'])).toBe(1);
+      expect(errors.join('\n')).toContain('no active token with id 1');
+    });
+
+    it('rejects an unusable scope', () => {
+      expect(main(['token', 'mint', '--scope', 'acme/widgets/extra'])).toBe(1);
+      expect(errors.join('\n')).toContain('--scope must be');
+    });
+
+    it('rejects an unknown subcommand', () => {
+      expect(main(['token', 'inspect'])).toBe(1);
+      expect(errors.join('\n')).toContain('mint, list, revoke');
+    });
+  });
 });
