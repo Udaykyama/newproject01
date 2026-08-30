@@ -59,7 +59,14 @@ export function requireIngestToken(expected: string | undefined) {
   };
 }
 
-/** SHA-256 of a token, hex encoded — the only form ever persisted. */
+/**
+ * SHA-256 of a token, hex encoded — the only form ever persisted.
+ *
+ * A single fast hash is correct here, and a password KDF (bcrypt, scrypt,
+ * Argon2) would be wrong: these tokens carry 256 bits of CSPRNG entropy, so
+ * there is no guessable input to slow an attacker down over, and the digest is
+ * looked up on every read request.
+ */
 export function tokenDigest(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
 }
