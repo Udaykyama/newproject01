@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="5" failures="1" errors="1" time="4.2">
+  <testsuite name="shard-1/checkout" tests="4" failures="1" errors="1" time="3.5">
+    <testcase classname="CheckoutSpec" name="applies a discount code" time="0.512"/>
+    <testcase classname="CheckoutSpec" name="charges the card" time="1.204">
+      <failure message="expected 200, received 502">at CheckoutSpec.charges (checkout.spec.ts:44:9)</failure>
+    </testcase>
+    <testcase classname="CheckoutSpec" name="emails a receipt" time="0.75">
+      <error message="Timeout of 2000ms exceeded"/>
+    </testcase>
+    <testcase classname="CheckoutSpec" name="supports gift cards &amp; vouchers" time="0.01">
+      <skipped/>
+    </testcase>
+  </testsuite>
+  <testsuite name="shard-2/pricing" tests="1" failures="0" time="0.7">
+    <testcase classname="PricingSpec" name="rounds to 2dp" time="0.7"/>
+  </testsuite>
+</testsuites>
