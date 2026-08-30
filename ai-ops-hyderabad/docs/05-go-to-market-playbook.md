@@ -19,7 +19,8 @@ exists to keep that number above eight.
   Paid clients          ~2/month early, 4/month by M9
 ```
 
-Because pilots are capped at three concurrent, **the real throttle is delivery, not demand.**
+Until the automation engineer joins in Month 6, pilots are capped at three concurrent; after that the
+cap rises with delivery headcount. Either way, **the real throttle is delivery, not demand.**
 Once the build time falls from 40 hours to 12, the cap can lift to six.
 
 ---
@@ -191,7 +192,7 @@ language and the customer, and they cost less than an engineer to train on n8n.
 
 ## 7. Twelve-month targets
 
-| Month | Doors | Audits | Pilots | New paid | Cumulative active | MRR |
+| Month | Doors | Audits | Pilots started | New paid | Cumulative active | MRR |
 |---:|---:|---:|---:|---:|---:|---:|
 | 1 | 240 | 12 | 2 | 0 | 0 | ₹0 |
 | 2 | 240 | 20 | 3 | 0 | 0 | ₹0 |

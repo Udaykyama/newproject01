@@ -97,14 +97,19 @@ templatisation ramp in [06](06-delivery-architecture.md) is what turns ₹43,000
 | Marketing & content | 2,40,000 |
 | Field sales associate (from M8) | 1,50,000 |
 | Founder selling time (50% of drawings) | 1,80,000 |
-| Free pilots: 48 pilots × ₹8,000 | 3,84,000 |
-| **Total** | **9,54,000** |
+| Free pilots: 55 pilots × ₹8,000 direct cost | 4,40,000 |
+| **Total** | **10,10,000** |
 | ÷ 24 clients acquired | |
-| **CAC ≈ ₹39,750** | |
+| **CAC ≈ ₹42,000** | |
+
+*The 55-pilot figure is the sum of the monthly "pilots started" column in
+[05-go-to-market-playbook.md](05-go-to-market-playbook.md) §7 (2·3·3·3·4·4·5·5·6·6·7·7). At a 50%
+pilot-to-paid rate that would yield 27 clients; we plan for 24 to leave room for pilots that run
+across a month boundary and for two that are abandoned mid-way.*
 
 | Metric | Value |
 |---|---:|
-| **LTV : CAC** | **≈ 15 : 1** |
+| **LTV : CAC** | **≈ 14 : 1** |
 | **CAC payback** | **Immediate** — the ₹75,000 build fee alone exceeds CAC |
 
 The second number is the important one. **This business recovers its acquisition cost before it
@@ -144,6 +149,11 @@ Rising to ~₹60,000/month from Month 7 (second BSP account, monitoring, higher 
 
 ## 4. Year 1 — month by month (Base case)
 
+**How to read this table.** The monthly `Costs` column is the monthly nut (₹79,000 in months 1–6,
+rising with each hire) **plus** cost of delivery on live clients **plus** the direct cost of free
+pilots running that month (~₹8,000 each). That is why Month 2 shows ₹87,000 rather than ₹79,000 —
+there are still no clients, but the first free pilot is running.
+
 | M | Active clients | New | Setup rev | Retainer + add-ons | Total rev | Costs | Monthly P&L | Cumulative |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 1 | 0 | 0 | 0 | 0 | 0 | 79,000 | (79,000) | (79,000) |
@@ -169,8 +179,8 @@ Small differences from the annual roll-up below are rounding in the monthly phas
 | Active clients at exit | 24 |
 | Client-months delivered | 112 |
 | Setup fee revenue (6 design partners @ ₹35k, 18 @ ₹75k) | 15,60,000 |
-| Retainer revenue (112 × ₹20,000) | 22,40,000 |
-| Messaging margin (112 × ₹1,200) | 1,34,400 |
+| Retainer revenue (112 client-months × ₹20,000 blended) | 22,40,000 |
+| Messaging & platform re-billing, **shown net** (112 × ₹1,200) | 1,34,400 |
 | Add-ons (one-time + recurring) | 3,25,000 |
 | **Total revenue** | **42,59,400** |
 | Fixed opex | 5,94,000 |
@@ -179,13 +189,31 @@ Small differences from the annual roll-up below are rounding in the monthly phas
 | Ops/success associate (from M9) | 1,12,000 |
 | Field sales associate (from M8) | 1,50,000 |
 | Freelance / contract delivery | 1,20,000 |
-| Marketing, content, association memberships | 2,40,000 |
+| Marketing & content, *over and above* the ₹10,000/month baseline already inside fixed opex | 2,40,000 |
 | Professional fees (CA, legal, insurance) | 1,20,000 |
 | Founder drawings | 3,60,000 |
 | **Total costs** | **25,52,520** |
 | **EBITDA** | **₹17,06,880** |
 | **EBITDA margin** | **40%** |
 | **Exit MRR** | **₹5,44,800** (ARR run-rate ₹65.4 lakh) |
+
+### Two notes on how this is presented
+
+**1. The ₹20,000 blended retainer.** The unit-economics table in §2 prices a single *Essential*
+client at ₹18,000. The ₹20,000 used here is the Year-1 blend across the base: most clients sit on
+Essential (₹18,000), a minority upgrade to Growth (₹32,000), and two multi-branch labs sit on
+Scale (₹55,000). Year-1 average monthly revenue per client therefore comes to ₹22,700 against the
+mature ₹27,500 in §2 — clients ramp into add-ons and message volume over their first two quarters,
+so the first year is deliberately modelled below steady state.
+
+**2. Messaging is credited net but costed gross — on purpose.** Messaging, BSP and infrastructure
+are re-billed to clients at cost + ~20%. Revenue above credits only the **margin** on that
+re-billing (₹1,200/client-month), while COGS carries the **full** pass-through cost
+(₹5,41,520). Strictly, gross re-billing of ~₹6,72,000 should appear in revenue, which would lift
+Year-1 EBITDA to roughly **₹22.5 lakh (47%)**. We keep the conservative presentation and hold the
+difference as an unstated cushion against message-volume overruns and against the October 2026
+service-window change — both outside our control. **Do not add the two effects together: the
+₹17.1 lakh figure is the one to plan and borrow against.**
 
 ---
 

@@ -14,7 +14,7 @@
 | **1. The client pays their own Meta/BSP charges from day one (~₹3,000)** | Filters tyre-kickers, establishes the payment habit, and means the pilot costs us only labour |
 | **2. Twenty-one days, hard stop. Automation switches off on day 22 unless a contract is signed.** | Creates a deadline. Open-ended pilots never close. |
 | **3. One workflow. Two integrations. No custom UI.** | Caps our cost at ~12 build hours |
-| **4. Maximum three pilots running at once** | Protects delivery capacity while you are still selling |
+| **4. Maximum three pilots running at once** (raise the cap only as delivery headcount grows — see [05](05-go-to-market-playbook.md) §7) | Protects delivery capacity while you are still selling |
 
 **Our cost per pilot: ~₹8,000.** At a 50% conversion rate and an ACV of ₹3.0 lakh, pilot CAC is
 ~₹16,000 — a **19:1** first-year return. That is the number that justifies giving work away.

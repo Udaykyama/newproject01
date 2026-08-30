@@ -294,9 +294,9 @@ modelled and depends on the constitution chosen.*
 | Ratio | Value |
 |---|---:|
 | Gross margin per client (recurring) | 74% |
-| Customer acquisition cost, fully loaded (Year 1) | ₹39,750 |
+| Customer acquisition cost, fully loaded (Year 1) | ₹42,000 |
 | Lifetime value (30-month average life) | ₹5,87,000 |
-| **LTV : CAC** | **≈ 15 : 1** |
+| **LTV : CAC** | **≈ 14 : 1** |
 | **CAC payback period** | **Immediate** — the ₹75,000 build fee exceeds CAC |
 | Debt-service coverage, Year 1 | > 20× on a ₹3 lakh Mudra loan |
 
