@@ -53,10 +53,11 @@ Not "we build AI chatbots." Every one of the nine Hyderabad competitors we found
 | | Year 1 | Year 2 | Year 3 |
 |---|---|---|---|
 | Active clients (exit) | 24 | 70 | 150 |
-| Revenue | ₹44.3 L | ₹1.90 Cr | ₹4.10 Cr |
-| EBITDA | ₹18.8 L | ₹68 L | ₹1.35 Cr |
-| EBITDA margin | 42% | 36% | 33% |
-| Headcount (exit) | 4 | 9 | 20 |
+| Revenue | ₹42.6 L | ₹2.11 Cr | ₹5.07 Cr |
+| EBITDA | ₹17.1 L | ₹69.9 L | ₹1.72 Cr |
+| EBITDA margin | 40% | 33% | 34% |
+| Exit MRR | ₹5.45 L | ₹19.25 L | ₹45.6 L |
+| Headcount (exit) | 4 | 12 | 26 |
 
 - **Seed capital required: ₹4.45 lakh** (₹1.45 L setup + ₹3.00 L working-capital buffer)
 - **Operating break-even: 4 paying clients** — projected Month 4
