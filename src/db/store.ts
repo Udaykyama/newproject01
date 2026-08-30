@@ -62,6 +62,39 @@ interface RepoRow {
   id: number;
 }
 
+/** The repositories a read token may see; `name: null` means the whole owner. */
+export interface ApiTokenScope {
+  readonly owner: string;
+  readonly name: string | null;
+}
+
+export interface ApiTokenRecord {
+  readonly id: number;
+  readonly scope: ApiTokenScope;
+  readonly label: string | null;
+  readonly createdAt: string;
+  readonly revokedAt: string | null;
+}
+
+interface ApiTokenRow {
+  id: number;
+  scope_owner: string;
+  scope_repo: string | null;
+  label: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+function toApiToken(row: ApiTokenRow): ApiTokenRecord {
+  return {
+    id: row.id,
+    scope: { owner: row.scope_owner, name: row.scope_repo },
+    label: row.label,
+    createdAt: row.created_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
 interface ObservationRow {
   external_id: string;
   suite: string;
@@ -581,6 +614,69 @@ export class Store {
     const result = this.db
       .prepare('DELETE FROM quarantines WHERE repo_id = ? AND suite = ? AND name = ?')
       .run(repoId, suite, name);
+    return result.changes > 0;
+  }
+
+  /**
+   * Store a read token by digest and return its record.
+   *
+   * The caller keeps the only copy of the secret; it is never written down, so
+   * a lost token is reissued rather than recovered.
+   */
+  createApiToken(digest: string, scope: ApiTokenScope, label: string | null = null): ApiTokenRecord {
+    const info = this.db
+      .prepare('INSERT INTO api_tokens (token_digest, scope_owner, scope_repo, label) VALUES (?, ?, ?, ?)')
+      .run(digest, scope.owner, scope.name, label);
+
+    const row = this.db
+      .prepare(
+        'SELECT id, scope_owner, scope_repo, label, created_at, revoked_at FROM api_tokens WHERE id = ?',
+      )
+      .get(Number(info.lastInsertRowid)) as ApiTokenRow | undefined;
+
+    if (!row) throw new Error('failed to store api token');
+    return toApiToken(row);
+  }
+
+  /** Resolve a token digest to its scope, or null when unknown or revoked. */
+  findApiTokenByDigest(digest: string): ApiTokenRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, scope_owner, scope_repo, label, created_at, revoked_at
+         FROM api_tokens
+         WHERE token_digest = ? AND revoked_at IS NULL`,
+      )
+      .get(digest) as ApiTokenRow | undefined;
+
+    return row ? toApiToken(row) : null;
+  }
+
+  /** True once at least one token exists, whether or not it is still active. */
+  hasApiTokens(): boolean {
+    return this.db.prepare('SELECT 1 FROM api_tokens WHERE revoked_at IS NULL LIMIT 1').get() !== undefined;
+  }
+
+  listApiTokens(): ApiTokenRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, scope_owner, scope_repo, label, created_at, revoked_at
+         FROM api_tokens
+         ORDER BY id`,
+      )
+      .all() as ApiTokenRow[];
+    return rows.map(toApiToken);
+  }
+
+  /**
+   * Revoke a token by id.
+   *
+   * Revoked rather than deleted, so "who could read this repository, and until
+   * when" stays answerable after an incident.
+   */
+  revokeApiToken(id: number, now: string = new Date().toISOString()): boolean {
+    const result = this.db
+      .prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+      .run(now, id);
     return result.changes > 0;
   }
 }

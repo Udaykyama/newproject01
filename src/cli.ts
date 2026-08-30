@@ -4,12 +4,14 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { openDatabase } from './db/index.js';
-import { Store } from './db/store.js';
+import { Store, type ApiTokenScope } from './db/store.js';
 import { parseJUnitXml } from './ingest/junit.js';
 import { assessAll, flakyOnly } from './analysis/flaky.js';
 import { buildPullRequestReport, windowStart } from './analysis/report.js';
 import { renderPullRequestComment } from './github/comment.js';
-import { parseRepoSlug } from './api/validate.js';
+import { isValidRepoName, parseRepoSlug } from './api/validate.js';
+import { generateApiToken, tokenDigest } from './api/auth.js';
+import { measurePrecision, parseLabels } from './analysis/precision.js';
 import type { RunnerOs, TestResult } from './types.js';
 
 /**
@@ -26,6 +28,10 @@ Usage:
   ci-ledger ingest --repo <owner/name> --sha <commit> [options] <junit-path...>
   ci-ledger flaky  --repo <owner/name> [--all]
   ci-ledger report --repo <owner/name> --pr <number> [--base <branch>]
+  ci-ledger precision --repo <owner/name> --labels <labels.json>
+  ci-ledger token mint --scope <owner[/name]> [--label <text>]
+  ci-ledger token list
+  ci-ledger token revoke --id <n>
 
 Ingest options:
   --repo      <owner/name>   Repository the run belongs to (required)
@@ -41,6 +47,17 @@ Ingest options:
   --conclusion <text>        Run conclusion (default: derived from results)
 
 Paths may be JUnit XML files or directories, which are scanned recursively.
+
+Precision options:
+  --labels <path>   JSON: { "flaky": [{"suite","name"}], "stable": [...] }
+
+Token options:
+  --scope <owner[/name]>  Repositories the read token may see; an owner alone
+                          grants every repository under it
+  --label <text>          Note recorded beside the token
+  --id    <n>             Token id to revoke
+
+Read tokens are only enforced when REQUIRE_READ_AUTH=true.
 `;
 
 /**
@@ -210,6 +227,116 @@ function runReport(values: Record<string, string | boolean | undefined>): void {
   console.log(`  flake-induced waste: ${formatUsd(report.waste.usd)} over ${report.waste.runCount} re-run(s)`);
 }
 
+/**
+ * Report how well the detector did against tests whose nature is known.
+ *
+ * Milestone 1 of the roadmap is a precision number, not a claim: this is the
+ * command that produces it, from the flake canary's labels.
+ */
+function runPrecision(values: Record<string, string | boolean | undefined>): void {
+  const repo = parseRepoSlug(values.repo);
+  if (!repo) fail('--repo must be a valid "owner/name" slug');
+
+  const labelsPath = typeof values.labels === 'string' ? values.labels.trim() : '';
+  if (!labelsPath) fail('--labels is required');
+
+  let labels;
+  try {
+    labels = parseLabels(JSON.parse(readFileSync(labelsPath, 'utf8')) as unknown);
+  } catch (error) {
+    fail(`could not read labels from ${labelsPath}: ${error instanceof Error ? error.message : 'invalid JSON'}`);
+  }
+
+  const config = loadConfig();
+  const store = new Store(openDatabase(config.databasePath));
+
+  const repoId = store.findRepo(repo);
+  if (repoId === null) fail(`no data recorded for ${repo.owner}/${repo.name}`);
+
+  const assessments = assessAll(
+    store.recentObservations(repoId, config.flake.windowSize, windowStart(config.flake.windowDays)),
+    config.flake,
+  );
+  const report = measurePrecision(assessments, labels);
+
+  const percent = (value: number | null): string => (value === null ? 'n/a' : `${(value * 100).toFixed(1)}%`);
+
+  console.log(`precision ${percent(report.precision)} · recall ${percent(report.recall)} over ${report.labelledCount} labelled test(s)`);
+  console.log(`  confirmed-verdict precision: ${percent(report.confirmedPrecision)}`);
+  console.log(
+    `  tp ${report.truePositives} · fp ${report.falsePositives} · fn ${report.falseNegatives} · tn ${report.trueNegatives}`,
+  );
+  console.log(`  flagged but unlabelled (not scored): ${report.unlabelledFlagged}`);
+
+  for (const label of report.unobserved) {
+    console.log(`  no observations in window: ${label.suite} › ${label.name}`);
+  }
+}
+
+/** Mint, list and revoke the repository-scoped tokens that guard reads. */
+function runToken(values: Record<string, string | boolean | undefined>, positionals: string[]): void {
+  const [subcommand] = positionals;
+  const config = loadConfig();
+  const store = new Store(openDatabase(config.databasePath));
+
+  switch (subcommand) {
+    case 'mint': {
+      const raw = typeof values.scope === 'string' ? values.scope.trim() : '';
+      if (!raw) fail('--scope must be "owner" or "owner/name"');
+
+      // An owner alone scopes the token to every repository under it, which is
+      // what an organisation-wide App installation grants.
+      let scope: ApiTokenScope;
+      if (raw.includes('/')) {
+        const parsed = parseRepoSlug(raw);
+        if (!parsed) fail('--scope must be "owner" or "owner/name"');
+        scope = { owner: parsed.owner, name: parsed.name };
+      } else {
+        if (!isValidRepoName(raw)) fail('--scope must be "owner" or "owner/name"');
+        scope = { owner: raw, name: null };
+      }
+
+      const label = typeof values.label === 'string' ? values.label.trim().slice(0, 120) : null;
+      const secret = generateApiToken();
+      const record = store.createApiToken(tokenDigest(secret), scope, label || null);
+
+      const target = record.scope.name ? `${record.scope.owner}/${record.scope.name}` : `${record.scope.owner}/*`;
+      // Printed once and never stored: only the digest is persisted, so a lost
+      // token is reissued rather than recovered.
+      console.log(`token #${record.id} for ${target}\n${secret}`);
+      if (!config.reads.requireAuth) {
+        console.log('warning: REQUIRE_READ_AUTH is not true, so read endpoints still answer without a token');
+      }
+      return;
+    }
+
+    case 'list': {
+      const tokens = store.listApiTokens();
+      if (tokens.length === 0) {
+        console.log('no read tokens issued');
+        return;
+      }
+      for (const token of tokens) {
+        const target = token.scope.name ? `${token.scope.owner}/${token.scope.name}` : `${token.scope.owner}/*`;
+        const state = token.revokedAt ? `revoked ${token.revokedAt}` : 'active';
+        console.log(`#${token.id}  ${target.padEnd(40)} ${state}${token.label ? ` · ${token.label}` : ''}`);
+      }
+      return;
+    }
+
+    case 'revoke': {
+      const id = typeof values.id === 'string' ? Number(values.id) : Number.NaN;
+      if (!Number.isInteger(id) || id <= 0) fail('--id must be a positive integer');
+      if (!store.revokeApiToken(id)) fail(`no active token with id ${id}`);
+      console.log(`revoked token #${id}`);
+      return;
+    }
+
+    default:
+      fail('token subcommand must be one of: mint, list, revoke');
+  }
+}
+
 export function run(argv: readonly string[]): void {
   const [command, ...rest] = argv;
 
@@ -237,6 +364,10 @@ export function run(argv: readonly string[]): void {
         conclusion: { type: 'string' },
         base: { type: 'string' },
         all: { type: 'boolean' },
+        labels: { type: 'string' },
+        scope: { type: 'string' },
+        label: { type: 'string' },
+        id: { type: 'string' },
         markdown: { type: 'boolean' },
       },
     });
@@ -256,6 +387,12 @@ export function run(argv: readonly string[]): void {
       return;
     case 'report':
       runReport(values);
+      return;
+    case 'precision':
+      runPrecision(values);
+      return;
+    case 'token':
+      runToken(values, positionals);
       return;
     default:
       console.error(`unknown command: ${command}\n`);

@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS run_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_run_jobs_run ON run_jobs (run_id);
 
+-- Read tokens, scoped to one owner and optionally one repository.
+--
+-- Read endpoints answer with test names, failure counts and CI spend, so a
+-- shared instance cannot serve them unauthenticated. Only the SHA-256 digest is
+-- stored: a stolen database must not yield working credentials, and the digest
+-- is what the lookup is keyed on so no comparison over the secret is needed.
+-- `scope_repo IS NULL` means every repository under `scope_owner`, which is
+-- what a GitHub App installed on an organisation grants.
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_digest TEXT NOT NULL UNIQUE,
+  scope_owner  TEXT NOT NULL,
+  scope_repo   TEXT,
+  label        TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_tokens_scope ON api_tokens (scope_owner, scope_repo);
+
 -- Tests an operator has explicitly quarantined. Kept separate from detection
 -- so an automated verdict never silently overrides a human decision.
 CREATE TABLE IF NOT EXISTS quarantines (

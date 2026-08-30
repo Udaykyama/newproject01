@@ -3,7 +3,7 @@ import type { AppContext } from '../context.js';
 import { buildPullRequestReport, buildRepoReport } from '../analysis/report.js';
 import { isFlaky } from '../analysis/flaky.js';
 import { renderPullRequestComment } from '../github/comment.js';
-import { requireIngestToken } from './auth.js';
+import { requireIngestToken, requireReadAccess } from './auth.js';
 import { ingestRateLimiter } from './rate-limit.js';
 import { isValidBranchName, isValidRepoName, parseIngestRequest } from './validate.js';
 import type { RepoRef } from '../types.js';
@@ -67,6 +67,9 @@ export function createRouter(context: AppContext): Router {
   // throttled rather than merely rejected.
   const ingestLimit = ingestRateLimiter(config.limits.ingestPerMinute);
   const ingestAuth = requireIngestToken(config.ingestToken);
+  // Row-level scoping for the read endpoints: a token may only see the
+  // repositories its scope names. A no-op unless REQUIRE_READ_AUTH is set.
+  const readAuth = requireReadAccess(context);
 
   router.get('/healthz', (_req, res) => {
     res.json({ status: 'ok' });
@@ -94,7 +97,7 @@ export function createRouter(context: AppContext): Router {
   });
 
   /** Ranked flake list for a repository. */
-  router.get('/v1/repos/:owner/:repo/flaky', (req, res) => {
+  router.get('/v1/repos/:owner/:repo/flaky', readAuth, (req, res) => {
     const repo = readRepoParams(req, res);
     if (!repo) return;
 
@@ -127,7 +130,7 @@ export function createRouter(context: AppContext): Router {
   });
 
   /** Cost and flake report for a single pull request. */
-  router.get('/v1/repos/:owner/:repo/pulls/:number/report', (req, res) => {
+  router.get('/v1/repos/:owner/:repo/pulls/:number/report', readAuth, (req, res) => {
     const repo = readRepoParams(req, res);
     if (!repo) return;
 
