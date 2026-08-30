@@ -1,10 +1,10 @@
-import { Router, json, type Request, type Response } from 'express';
+import { Router, json, type Request, type RequestHandler, type Response } from 'express';
 import type { AppContext } from '../context.js';
 import { buildPullRequestReport, buildRepoReport } from '../analysis/report.js';
 import { isFlaky } from '../analysis/flaky.js';
 import { renderPullRequestComment } from '../github/comment.js';
 import { requireIngestToken, requireReadAccess } from './auth.js';
-import { ingestRateLimiter } from './rate-limit.js';
+import { ingestRateLimiter, readRateLimiter } from './rate-limit.js';
 import { isValidBranchName, isValidRepoName, parseIngestRequest } from './validate.js';
 import type { RepoRef } from '../types.js';
 
@@ -70,6 +70,12 @@ export function createRouter(context: AppContext): Router {
   // Row-level scoping for the read endpoints: a token may only see the
   // repositories its scope names. A no-op unless REQUIRE_READ_AUTH is set.
   const readAuth = requireReadAccess(context);
+  // Reads only verify a secret once auth is required, so that is the only case
+  // where they carry a secret worth brute-forcing — and the only case that
+  // needs a limit. Left off otherwise, so an open instance stays open.
+  const readGuards: RequestHandler[] = config.reads.requireAuth
+    ? [readRateLimiter(config.limits.readPerMinute), readAuth]
+    : [readAuth];
 
   router.get('/healthz', (_req, res) => {
     res.json({ status: 'ok' });
@@ -97,7 +103,7 @@ export function createRouter(context: AppContext): Router {
   });
 
   /** Ranked flake list for a repository. */
-  router.get('/v1/repos/:owner/:repo/flaky', readAuth, (req, res) => {
+  router.get('/v1/repos/:owner/:repo/flaky', readGuards, (req: Request, res: Response) => {
     const repo = readRepoParams(req, res);
     if (!repo) return;
 
@@ -130,7 +136,7 @@ export function createRouter(context: AppContext): Router {
   });
 
   /** Cost and flake report for a single pull request. */
-  router.get('/v1/repos/:owner/:repo/pulls/:number/report', readAuth, (req, res) => {
+  router.get('/v1/repos/:owner/:repo/pulls/:number/report', readGuards, (req: Request, res: Response) => {
     const repo = readRepoParams(req, res);
     if (!repo) return;
 

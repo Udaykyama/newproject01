@@ -83,6 +83,13 @@ Alternatively, copy the `ai-ops-hyderabad/` directory into a fresh `git init`.
 > **Note:** the agent that produced this work cannot create or push to repositories other than
 > `Udaykyama/newproject01`, so the material is delivered here in a portable form.
 
+**Do the split before either track is shown to anyone.** The repository it currently sits in is
+`ci-ledger`, an unrelated CI product. A software product and a consultancy DPR in one repository
+makes both look unserious to a diligence reader, and the two businesses have nothing in common
+beyond their author: this one is fast revenue and low leverage, that one is slow revenue and
+high leverage. Founder time is the scarce resource, so one of them is primary and the other is
+either funding it or paused — not both at once.
+
 ---
 
 ## Honesty notes

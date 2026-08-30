@@ -173,6 +173,19 @@ describe('read endpoint authorisation', () => {
     expect((await readFlaky(url, 'acme/widgets', INGEST_TOKEN)).status).toBe(200);
   });
 
+  it('rate limits token guesses, so a read token cannot be brute-forced', async () => {
+    const limit = 3;
+    const { url, store } = await startServer({ REQUIRE_READ_AUTH: 'true', RATE_LIMIT_READ_PER_MIN: String(limit) });
+    seed(store, 'acme', 'widgets');
+
+    let last = 0;
+    for (let attempt = 0; attempt <= limit; attempt += 1) {
+      last = (await readFlaky(url, 'acme/widgets', `guess-${attempt}`)).status;
+    }
+
+    expect(last).toBe(429);
+  });
+
   it('rejects an invalid repository name before consulting the token', async () => {
     const { url } = await startServer({ REQUIRE_READ_AUTH: 'true' });
 

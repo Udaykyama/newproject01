@@ -29,6 +29,8 @@ export interface RateLimits {
   readonly webhookPerMinute: number;
   /** Max authenticated ingest/quarantine requests per client IP per minute. */
   readonly ingestPerMinute: number;
+  /** Max token-checked read requests per client IP per minute. */
+  readonly readPerMinute: number;
 }
 
 /** Bounds on how much a single read endpoint will return. */
@@ -109,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     limits: {
       webhookPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_WEBHOOK_PER_MIN, 600))),
       ingestPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_INGEST_PER_MIN, 300))),
+      readPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_READ_PER_MIN, 600))),
     },
   };
 }
