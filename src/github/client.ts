@@ -1,7 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
 import type { Config } from '../config.js';
-import type { RunnerOs } from '../types.js';
+import type { JobRecord, RunnerOs } from '../types.js';
 import { COMMENT_MARKER } from './comment.js';
 
 /**
@@ -57,9 +57,13 @@ export function inferRunnerOs(labels: readonly string[]): RunnerOs {
 export interface JobBillingSummary {
   readonly runnerOs: RunnerOs;
   readonly durationMs: number;
+  /** The individual jobs, which is what GitHub actually bills. */
+  readonly jobs: readonly JobRecord[];
 }
 
 interface JobLike {
+  readonly id?: number | string | null;
+  readonly name?: string | null;
   readonly labels?: string[] | null;
   readonly started_at?: string | null;
   readonly completed_at?: string | null;
@@ -74,25 +78,35 @@ function durationOf(job: JobLike): number {
 }
 
 /**
- * Reduce a run's jobs to a single billing row.
+ * Reduce a run's jobs to billing rows plus a run-level summary.
  *
- * GitHub bills per job, so summing job durations is far closer to the invoice
- * than the run's wall-clock time, which counts parallel jobs only once. The
- * run is attributed to whichever OS consumed the most time; mixed-OS runs are
- * therefore approximate, which the README calls out.
+ * The per-job breakdown is what pricing uses, because GitHub bills each job
+ * separately and a run's jobs can straddle rate tiers that differ by 10×. The
+ * summary fields are the degraded view kept for stores that hold only run-level
+ * data, and attribute the run to whichever OS consumed the most time.
  */
 export function summariseJobs(jobs: readonly JobLike[]): JobBillingSummary | null {
   if (jobs.length === 0) return null;
 
   const byOs = new Map<RunnerOs, number>();
+  const records: JobRecord[] = [];
   let durationMs = 0;
 
-  for (const job of jobs) {
+  jobs.forEach((job, index) => {
     const ms = durationOf(job);
     const os = inferRunnerOs(job.labels ?? []);
     durationMs += ms;
     byOs.set(os, (byOs.get(os) ?? 0) + ms);
-  }
+
+    records.push({
+      // Fall back to the position in the list so a provider that omits ids
+      // still produces stable keys across redeliveries of the same run.
+      externalId: job.id === undefined || job.id === null ? `index-${index}` : String(job.id),
+      name: job.name ?? `job-${index}`,
+      runnerOs: os,
+      durationMs: ms,
+    });
+  });
 
   let runnerOs: RunnerOs = 'linux';
   let best = -1;
@@ -103,7 +117,7 @@ export function summariseJobs(jobs: readonly JobLike[]): JobBillingSummary | nul
     }
   }
 
-  return { runnerOs, durationMs };
+  return { runnerOs, durationMs, jobs: records };
 }
 
 /**

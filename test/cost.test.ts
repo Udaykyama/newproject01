@@ -21,6 +21,8 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     runAttempt: 1,
     runnerOs: 'linux' as RunnerOs,
     durationMs: 10 * MINUTE,
+    durationSource: 'jobs',
+    jobs: [],
     conclusion: 'success',
     commitSha: 'sha-1',
     branch: 'main',

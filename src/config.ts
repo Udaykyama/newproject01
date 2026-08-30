@@ -20,6 +20,8 @@ export interface FlakeTuning {
   readonly flipRateThreshold: number;
   /** How many recent results per test are considered. */
   readonly windowSize: number;
+  /** How many days back evidence stays relevant; 0 disables the time bound. */
+  readonly windowDays: number;
 }
 
 export interface RateLimits {
@@ -27,6 +29,12 @@ export interface RateLimits {
   readonly webhookPerMinute: number;
   /** Max authenticated ingest/quarantine requests per client IP per minute. */
   readonly ingestPerMinute: number;
+}
+
+/** Bounds on how much a single read endpoint will return. */
+export interface ReadLimits {
+  readonly defaultPageSize: number;
+  readonly maxPageSize: number;
 }
 
 export interface Config {
@@ -40,6 +48,7 @@ export interface Config {
   readonly rates: CostRates;
   readonly flake: FlakeTuning;
   readonly limits: RateLimits;
+  readonly reads: ReadLimits;
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -81,6 +90,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       minRuns: Math.max(2, Math.trunc(num(env.FLAKE_MIN_RUNS, 5))),
       flipRateThreshold: num(env.FLAKE_FLIP_RATE_THRESHOLD, 0.15),
       windowSize: Math.max(2, Math.trunc(num(env.FLAKE_WINDOW_SIZE, 50))),
+      windowDays: Math.max(0, num(env.FLAKE_WINDOW_DAYS, 90)),
+    },
+    reads: {
+      defaultPageSize: Math.max(1, Math.trunc(num(env.READ_DEFAULT_PAGE_SIZE, 100))),
+      maxPageSize: Math.max(1, Math.trunc(num(env.READ_MAX_PAGE_SIZE, 500))),
     },
     limits: {
       webhookPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_WEBHOOK_PER_MIN, 600))),

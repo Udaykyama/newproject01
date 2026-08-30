@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { COMMENT_MARKER, renderPullRequestComment } from '../src/github/comment.js';
-import type { PullRequestReport } from '../src/analysis/report.js';
-import type { FlakeAssessment } from '../src/types.js';
+import type { FlakeFinding, PullRequestReport } from '../src/analysis/report.js';
 
-function flake(overrides: Partial<FlakeAssessment> = {}): FlakeAssessment {
+function flake(overrides: Partial<FlakeFinding> = {}): FlakeFinding {
   return {
     suite: 'CheckoutSpec',
     name: 'charges the card',
@@ -16,6 +15,7 @@ function flake(overrides: Partial<FlakeAssessment> = {}): FlakeAssessment {
     failureRateLowerBound: 0.15,
     totalDurationMs: 20_000,
     lastSeenAt: '2026-01-01T00:00:00.000Z',
+    quarantined: false,
     ...overrides,
   };
 }
@@ -32,6 +32,13 @@ function report(overrides: Partial<PullRequestReport> = {}): PullRequestReport {
       retryCount: 1,
       retryUsd: 0.08,
       byWorkflow: [{ workflowName: 'ci', runCount: 3, billableMinutes: 30, usd: 0.24 }],
+      confidence: {
+        weakestSource: 'jobs',
+        pricedPerJob: 3,
+        wallClockRuns: 0,
+        reportedRuns: 0,
+        exact: true,
+      },
     },
     baseline: { currentUsd: 0.24, baselineUsd: 0.18, deltaUsd: 0.06, deltaPct: 33.3 },
     flakes: [],
@@ -113,7 +120,21 @@ describe('renderPullRequestComment', () => {
   it('renders sub-cent amounts at higher precision instead of $0.00', () => {
     const body = renderPullRequestComment(
       report({
-        cost: { runCount: 1, billableMinutes: 1, usd: 0.008, retryCount: 0, retryUsd: 0, byWorkflow: [] },
+        cost: {
+          runCount: 1,
+          billableMinutes: 1,
+          usd: 0.008,
+          retryCount: 0,
+          retryUsd: 0,
+          byWorkflow: [],
+          confidence: {
+            weakestSource: 'jobs',
+            pricedPerJob: 1,
+            wallClockRuns: 0,
+            reportedRuns: 0,
+            exact: true,
+          },
+        },
         baseline: { currentUsd: 0.008, baselineUsd: 0, deltaUsd: 0.008, deltaPct: null },
       }),
     );
@@ -156,7 +177,14 @@ describe('renderPullRequestComment', () => {
     const body = renderPullRequestComment(
       report({
         quarantined: [
-          { suite: 'CheckoutSpec', name: 'emails a receipt', reason: null, createdAt: '2026-01-01' },
+          {
+            suite: 'CheckoutSpec',
+            name: 'emails a receipt',
+            reason: null,
+            createdAt: '2026-01-01',
+            createdBy: null,
+            expiresAt: null,
+          },
         ],
       }),
     );

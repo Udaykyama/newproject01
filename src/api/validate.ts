@@ -1,5 +1,13 @@
 import { parseJUnitXml } from '../ingest/junit.js';
-import type { RunIngestPayload, RunnerOs, TestResult, TestStatus } from '../types.js';
+import {
+  UNKNOWN_BRANCH,
+  UNKNOWN_CONCLUSION,
+  UNKNOWN_WORKFLOW,
+  type RunIngestPayload,
+  type RunnerOs,
+  type TestResult,
+  type TestStatus,
+} from '../types.js';
 
 /**
  * Hand-rolled validation for the ingest endpoint.
@@ -182,14 +190,18 @@ export function parseIngestRequest(body: unknown): ValidationResult<RunIngestPay
       repo,
       run: {
         externalId,
-        workflowName: optionalString(runRaw.workflowName) ?? 'unknown workflow',
+        workflowName: optionalString(runRaw.workflowName) ?? UNKNOWN_WORKFLOW,
         runAttempt,
         commitSha: commitSha.toLowerCase(),
-        branch: optionalString(runRaw.branch) ?? 'unknown',
+        branch: optionalString(runRaw.branch) ?? UNKNOWN_BRANCH,
         pullRequestNumber,
         runnerOs,
         durationMs,
-        conclusion: optionalString(runRaw.conclusion) ?? 'unknown',
+        // A job cannot observe the run it is running inside, so whatever it
+        // claims is the weakest measurement available and must never displace
+        // the provider's own per-job billing data.
+        durationSource: 'reported',
+        conclusion: optionalString(runRaw.conclusion) ?? UNKNOWN_CONCLUSION,
         // Normalised so lexicographic ordering in SQL matches chronological
         // ordering, which the flake engine relies on.
         startedAt: new Date(startedAt).toISOString(),

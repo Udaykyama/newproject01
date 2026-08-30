@@ -64,6 +64,17 @@ async function ingest(body: unknown, token: string | null = TOKEN): Promise<Resp
   });
 }
 
+/**
+ * Runs are dated relative to now, not to a fixed literal: detection has a
+ * time-bounded window, so a hard-coded date would quietly stop matching once
+ * the calendar moved past it.
+ */
+const NOW = Date.now();
+
+function recentIso(minutesAgo: number): string {
+  return new Date(NOW - minutesAgo * 60_000).toISOString();
+}
+
 function run(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     externalId: 'run-1',
@@ -74,7 +85,7 @@ function run(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     runnerOs: 'linux',
     durationMs: 600_000,
     conclusion: 'success',
-    startedAt: '2026-01-01T00:00:00.000Z',
+    startedAt: recentIso(60),
     ...overrides,
   };
 }

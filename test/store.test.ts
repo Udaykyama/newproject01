@@ -17,6 +17,7 @@ function payload(overrides: Partial<RunIngestPayload['run']> = {}, results: Test
       pullRequestNumber: null,
       runnerOs: 'linux',
       durationMs: 60_000,
+      durationSource: 'reported',
       conclusion: 'success',
       startedAt: '2026-01-01T00:00:00.000Z',
       ...overrides,

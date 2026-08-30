@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS runs (
   pull_request_number INTEGER,
   runner_os           TEXT NOT NULL,
   duration_ms         INTEGER NOT NULL,
+  -- Provenance of duration_ms: 'jobs' (per-job billing data), 'wallclock'
+  -- (the run's elapsed span) or 'reported' (whatever the uploader claimed).
+  -- The two writers of this row measure differently, so the better measurement
+  -- has to be identifiable when they disagree.
+  duration_source     TEXT NOT NULL DEFAULT 'reported',
   conclusion          TEXT NOT NULL,
   started_at          TEXT NOT NULL,
   created_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -51,6 +56,21 @@ CREATE TABLE IF NOT EXISTS test_results (
 CREATE INDEX IF NOT EXISTS idx_test_results_run ON test_results (run_id);
 CREATE INDEX IF NOT EXISTS idx_test_results_identity ON test_results (suite, name);
 
+-- Per-job billing rows. The job, not the run, is what GitHub charges for, and
+-- one run's jobs can span operating systems whose rates differ by 10x — so the
+-- breakdown has to survive if the cost figure is to reproduce the invoice.
+CREATE TABLE IF NOT EXISTS run_jobs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id      INTEGER NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  runner_os   TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  UNIQUE (run_id, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_jobs_run ON run_jobs (run_id);
+
 -- Tests an operator has explicitly quarantined. Kept separate from detection
 -- so an automated verdict never silently overrides a human decision.
 CREATE TABLE IF NOT EXISTS quarantines (
@@ -59,6 +79,10 @@ CREATE TABLE IF NOT EXISTS quarantines (
   suite      TEXT NOT NULL,
   name       TEXT NOT NULL,
   reason     TEXT,
+  -- Who asked for the quarantine, and when it stops applying. A quarantine
+  -- with no owner and no end date is how a skipped test becomes permanent.
+  created_by TEXT,
+  expires_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (repo_id, suite, name)
 );
