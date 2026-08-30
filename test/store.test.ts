@@ -260,6 +260,19 @@ describe('Store', () => {
     });
   });
 
+  it('attaches jobs only for the runs it returned', () => {
+    const jobs = [{ externalId: 'j1', name: 'build', runnerOs: 'linux' as const, durationMs: 60_000 }];
+
+    store.recordRun({ ...payload({ externalId: 'old', startedAt: '2026-01-01T00:00:00.000Z' }, []), jobs });
+    store.recordRun({ ...payload({ externalId: 'new', startedAt: '2026-01-02T00:00:00.000Z' }, []), jobs });
+
+    const runs = store.runsForBranch(store.findRepo(REPO)!, 'main', 1);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.externalId).toBe('new');
+    expect(runs[0]?.jobs).toHaveLength(1);
+  });
+
   it('excludes retries from the baseline sample when asked', () => {
     store.recordRun(payload({ runAttempt: 1 }, []));
     store.recordRun(payload({ runAttempt: 2 }, []));

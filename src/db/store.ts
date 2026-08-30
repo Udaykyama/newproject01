@@ -454,8 +454,29 @@ export class Store {
     return rows.map(mapObservation);
   }
 
-  /** Attach per-job billing rows to runs already loaded from a query. */
-  private attachJobs(rows: readonly ExistingRunRow[], jobRows: readonly JobRow[]): RunRecord[] {
+  /**
+   * Load per-job billing rows for exactly the runs given, and attach them.
+   *
+   * Fetching by run id rather than by repeating the outer query's predicates
+   * keeps the job read bounded by the same `LIMIT`: re-running the predicate
+   * would pull every job row on the branch and then discard most of them. The
+   * placeholder list is generated from the row count, never from caller input,
+   * so the statement stays fully parameterised.
+   */
+  private attachJobs(rows: readonly ExistingRunRow[]): RunRecord[] {
+    if (rows.length === 0) return [];
+
+    const ids = rows.map((row) => row.id);
+    const placeholders = ids.map(() => '?').join(', ');
+
+    const jobRows = this.db
+      .prepare(
+        `SELECT run_id, external_id, name, runner_os, duration_ms
+         FROM run_jobs
+         WHERE run_id IN (${placeholders})`,
+      )
+      .all(...ids) as JobRow[];
+
     const byRun = groupJobs(jobRows);
     return rows.map((row) => mapRun(row, byRun.get(row.id) ?? []));
   }
@@ -471,16 +492,7 @@ export class Store {
       )
       .all(repoId, pullRequestNumber) as ExistingRunRow[];
 
-    const jobRows = this.db
-      .prepare(
-        `SELECT j.run_id, j.external_id, j.name, j.runner_os, j.duration_ms
-         FROM run_jobs j
-         JOIN runs r ON r.id = j.run_id
-         WHERE r.repo_id = ? AND r.pull_request_number = ?`,
-      )
-      .all(repoId, pullRequestNumber) as JobRow[];
-
-    return this.attachJobs(rows, jobRows);
+    return this.attachJobs(rows);
   }
 
   /**
@@ -497,30 +509,22 @@ export class Store {
     limit: number,
     options: { readonly excludeRetries?: boolean } = {},
   ): RunRecord[] {
-    // A literal branch in the SQL text keeps both queries parameterised.
-    const attemptFilter = options.excludeRetries === true ? 'AND r.run_attempt = 1' : '';
+    // One of two literal strings, chosen by a boolean: no caller-supplied value
+    // reaches the SQL text.
+    const attemptFilter = options.excludeRetries === true ? 'AND run_attempt = 1' : '';
 
     const rows = this.db
       .prepare(
-        `SELECT r.id, r.external_id, r.workflow_name, r.run_attempt, r.runner_os, r.duration_ms,
-                r.duration_source, r.conclusion, r.commit_sha, r.branch, r.pull_request_number, r.started_at
-         FROM runs r
-         WHERE r.repo_id = ? AND r.branch = ? ${attemptFilter}
-         ORDER BY r.started_at DESC, r.run_attempt DESC
+        `SELECT id, external_id, workflow_name, run_attempt, runner_os, duration_ms,
+                duration_source, conclusion, commit_sha, branch, pull_request_number, started_at
+         FROM runs
+         WHERE repo_id = ? AND branch = ? ${attemptFilter}
+         ORDER BY started_at DESC, run_attempt DESC
          LIMIT ?`,
       )
       .all(repoId, branch, limit) as ExistingRunRow[];
 
-    const jobRows = this.db
-      .prepare(
-        `SELECT j.run_id, j.external_id, j.name, j.runner_os, j.duration_ms
-         FROM run_jobs j
-         JOIN runs r ON r.id = j.run_id
-         WHERE r.repo_id = ? AND r.branch = ? ${attemptFilter}`,
-      )
-      .all(repoId, branch) as JobRow[];
-
-    return this.attachJobs(rows, jobRows);
+    return this.attachJobs(rows);
   }
 
   /**
