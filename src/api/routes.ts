@@ -115,8 +115,10 @@ export function createRouter(context: AppContext): Router {
     if (req.query.format === 'markdown') {
       // Served as plain text: the body is markdown source for a PR comment,
       // consumed by API clients rather than rendered by a browser, and it
-      // carries test names that originate in untrusted CI reports.
-      res.type('text/plain; charset=utf-8').send(renderPullRequestComment(report));
+      // carries test names that originate in untrusted CI reports. The header
+      // is set on its own statement so the declared type is unambiguous.
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.send(renderPullRequestComment(report));
       return;
     }
 
