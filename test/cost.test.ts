@@ -5,8 +5,8 @@ import {
   medianRunCostUsd,
   priceRun,
   summariseCosts,
-  testKey,
 } from '../src/analysis/cost.js';
+import { testKey } from '../src/analysis/identity.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import type { Observation, RunRecord } from '../src/db/store.js';
 import type { RunnerOs, TestStatus } from '../src/types.js';

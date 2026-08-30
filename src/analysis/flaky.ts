@@ -1,6 +1,7 @@
 import { FAILING_STATUSES, type FlakeAssessment, type FlakeVerdict } from '../types.js';
 import type { Observation } from '../db/store.js';
 import type { FlakeTuning } from '../config.js';
+import { testKey } from './identity.js';
 
 /**
  * Flake detection.
@@ -29,18 +30,12 @@ export interface TestHistory {
   readonly observations: readonly Observation[];
 }
 
-const IDENTITY_SEPARATOR = '\u0000';
-
-function identityKey(suite: string, name: string): string {
-  return `${suite}${IDENTITY_SEPARATOR}${name}`;
-}
-
 /** Group raw observations by test identity, chronologically within each test. */
 export function groupByTest(observations: readonly Observation[]): TestHistory[] {
   const groups = new Map<string, Observation[]>();
 
   for (const observation of observations) {
-    const key = identityKey(observation.suite, observation.name);
+    const key = testKey(observation.suite, observation.name);
     const bucket = groups.get(key);
     if (bucket) {
       bucket.push(observation);

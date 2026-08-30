@@ -1,6 +1,7 @@
 import type { CostRates } from '../config.js';
 import type { Observation, RunRecord } from '../db/store.js';
 import { FAILING_STATUSES, type RunnerOs } from '../types.js';
+import { testKey } from './identity.js';
 
 /**
  * CI cost attribution.
@@ -169,13 +170,6 @@ export function compareToBaseline(
     deltaUsd,
     deltaPct: baselineUsd > 0 ? (deltaUsd / baselineUsd) * 100 : null,
   };
-}
-
-const IDENTITY_SEPARATOR = '\u0000';
-
-/** Stable key for a test identity, matching the flake engine's grouping. */
-export function testKey(suite: string, name: string): string {
-  return `${suite}${IDENTITY_SEPARATOR}${name}`;
 }
 
 /**

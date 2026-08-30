@@ -7,6 +7,31 @@ import { createWebhooks } from './github/webhooks.js';
 const WEBHOOK_BODY_LIMIT = '5mb';
 
 /**
+ * Recover the HTTP status `@octokit/webhooks` attached to a rejection.
+ *
+ * Signature mismatches and unparseable payloads are tagged with `status: 400`
+ * by the library and wrapped in an `AggregateError`. Reading that property is
+ * stable across releases, unlike matching on the message text; anything with
+ * no client-error status is our own bug and must be reported as a 500 so
+ * GitHub retries the delivery.
+ */
+function clientErrorStatus(error: unknown): number | null {
+  const candidates: unknown[] = [error];
+
+  if (error instanceof AggregateError && Array.isArray(error.errors)) {
+    candidates.push(...error.errors);
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const status = (candidate as { status?: unknown }).status;
+    if (typeof status === 'number' && status >= 400 && status < 500) return status;
+  }
+
+  return null;
+}
+
+/**
  * Build the Express application.
  *
  * The webhook route reads the body as raw text because signature verification
@@ -43,11 +68,16 @@ export function createServer(context: AppContext): Express {
           });
           res.status(202).json({ ok: true });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'webhook processing failed';
-          // Signature failures are the caller's fault and must never be
-          // retried; anything else is ours, and GitHub should retry it.
-          const isSignatureFailure = message.toLowerCase().includes('signature');
-          res.status(isSignatureFailure ? 401 : 500).json({ error: message });
+          const status = clientErrorStatus(error);
+
+          if (status !== null) {
+            // The caller's fault, so GitHub must not retry it.
+            res.status(status).json({ error: 'webhook rejected' });
+            return;
+          }
+
+          console.error('[webhook] delivery failed:', error);
+          res.status(500).json({ error: 'webhook processing failed' });
         }
       },
     );

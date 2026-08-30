@@ -6,11 +6,11 @@ import {
   compareToBaseline,
   flakeInducedWaste,
   summariseCosts,
-  testKey,
   type BaselineComparison,
   type CostSummary,
   type FlakeWaste,
 } from './cost.js';
+import { testKey } from './identity.js';
 
 /** How many recent base-branch runs form the cost baseline. */
 const BASELINE_SAMPLE_SIZE = 20;

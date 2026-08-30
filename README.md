@@ -257,13 +257,14 @@ timed-out six-hour run would drag an average far above a typical build.
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run  (101 tests)
+npm test            # vitest run  (109 tests)
 npm run build       # tsc + copy schema.sql into dist
 npm run dev         # watch mode
 ```
 
 Tests cover the XML parser, the detection engine, the cost model, the store's idempotency
-guarantees, the comment renderer, and the full HTTP surface end to end over a real socket.
+guarantees, the comment renderer, webhook signature verification, and the full HTTP surface end
+to end over a real socket.
 
 ### Security notes
 
