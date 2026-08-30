@@ -1,0 +1,68 @@
+name: Flake canary
+
+# Ground truth for the detector.
+#
+# A flake detector that never fires looks exactly like a healthy suite, so this
+# workflow runs a deliberately non-deterministic test and ingests the result.
+# Its verdict can then be checked against a known answer on a real repository
+# instead of only against synthetic fixtures.
+#
+# It is a separate workflow, not a job in `ci.yml`, for two reasons: it must
+# never gate a merge, and self-ingest keys on the workflow run id — two jobs in
+# one run would collide on that key, and the second would be discarded as a
+# replay.
+
+on:
+  schedule:
+    # Hourly: contradictory evidence on a single commit is what confirms a
+    # flake, and that needs repeated runs of the same code.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: known-flaky test
+    runs-on: ubuntu-latest
+    env:
+      CI_LEDGER_URL: ${{ secrets.CI_LEDGER_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Record the start time
+        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      - name: Run the canary
+        id: canary
+        # Expected to fail about half the time — that is the entire point.
+        continue-on-error: true
+        env:
+          CI_LEDGER_FLAKE_CANARY: 'true'
+        run: npm run test:flake-canary
+
+      - name: Upload canary report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flake-canary-report
+          path: reports/flake-canary.xml
+          if-no-files-found: error
+
+      - name: Report this run to ci-ledger
+        if: always() && env.CI_LEDGER_URL != ''
+        uses: ./.github/actions/report-to-ci-ledger
+        with:
+          url: ${{ secrets.CI_LEDGER_URL }}
+          token: ${{ secrets.CI_LEDGER_INGEST_TOKEN }}
+          report-path: reports/flake-canary.xml
+          started-at: ${{ env.RUN_STARTED_AT }}
+          conclusion: ${{ steps.canary.outcome }}

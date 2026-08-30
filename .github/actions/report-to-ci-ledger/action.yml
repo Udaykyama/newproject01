@@ -1,0 +1,92 @@
+name: Report to ci-ledger
+description: >-
+  Upload this workflow run's JUnit report and measured duration to a ci-ledger
+  instance.
+
+# Shared by every workflow that dogfoods the product, so the ingest contract
+# lives in one place rather than being copied into each job.
+#
+# `external-id` is deliberately the workflow run id and nothing else: the
+# workflow_run webhook keys on the same value, and the two producers must land
+# on the same row for the webhook's per-job billing data to enrich these
+# results. One self-ingest per workflow run.
+
+inputs:
+  url:
+    description: Base URL of the ci-ledger instance.
+    required: true
+  token:
+    description: Shared ingest token accepted by the instance.
+    required: true
+  report-path:
+    description: Path to the JUnit XML report to upload.
+    required: true
+  started-at:
+    description: >-
+      ISO 8601 timestamp captured at the start of the job. The duration is
+      measured from this, because a job cannot observe the run it runs inside
+      and reporting zero would price every run at the one-minute floor.
+    required: true
+  conclusion:
+    description: Outcome of the job, normally `${{ job.status }}`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Post the run to ci-ledger
+      shell: bash
+      env:
+        CI_LEDGER_URL: ${{ inputs.url }}
+        CI_LEDGER_INGEST_TOKEN: ${{ inputs.token }}
+        REPORT_PATH: ${{ inputs.report-path }}
+        RUN_STARTED_AT: ${{ inputs.started-at }}
+        RUN_CONCLUSION: ${{ inputs.conclusion }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -f "$REPORT_PATH" ]; then
+          echo "no report at $REPORT_PATH — nothing to upload"
+          exit 0
+        fi
+
+        started_ms=$(date -u -d "$RUN_STARTED_AT" +%s%3N)
+        now_ms=$(date -u +%s%3N)
+
+        jq -n \
+          --arg repo "$GITHUB_REPOSITORY" \
+          --arg externalId "$GITHUB_RUN_ID" \
+          --arg workflowName "$GITHUB_WORKFLOW" \
+          --arg commitSha "$HEAD_SHA" \
+          --arg branch "$BRANCH" \
+          --arg conclusion "$RUN_CONCLUSION" \
+          --arg startedAt "$RUN_STARTED_AT" \
+          --arg pr "${PR_NUMBER:-}" \
+          --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
+          --argjson durationMs "$((now_ms - started_ms))" \
+          --rawfile junitXml "$REPORT_PATH" \
+          '{
+             repo: $repo,
+             run: {
+               externalId: $externalId,
+               workflowName: $workflowName,
+               runAttempt: $runAttempt,
+               commitSha: $commitSha,
+               branch: $branch,
+               pullRequestNumber: (if $pr == "" then null else ($pr | tonumber) end),
+               runnerOs: "linux",
+               durationMs: $durationMs,
+               conclusion: $conclusion,
+               startedAt: $startedAt
+             },
+             junitXml: $junitXml
+           }' > "$RUNNER_TEMP/ci-ledger-payload.json"
+
+        curl --silent --show-error --fail-with-body --max-time 30 \
+          -X POST "$CI_LEDGER_URL/v1/ingest/junit" \
+          -H "authorization: Bearer $CI_LEDGER_INGEST_TOKEN" \
+          -H 'content-type: application/json' \
+          --data "@$RUNNER_TEMP/ci-ledger-payload.json"

@@ -9,6 +9,8 @@
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "cli": "tsx --env-file-if-exists=.env src/cli.ts",
     "test": "vitest run",
+    "test:ci": "vitest run --reporter=default --reporter=junit --outputFile.junit=reports/junit.xml",
+    "test:flake-canary": "vitest run test/flake-canary.test.ts --reporter=default --reporter=junit --outputFile.junit=reports/flake-canary.xml",
     "test:watch": "vitest"
   },
   "repository": {
