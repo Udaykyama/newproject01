@@ -260,6 +260,13 @@ describe('Store', () => {
     });
   });
 
+  it('keeps the first measurement when a redelivery has the same provenance', () => {
+    store.recordRun(payload({ durationMs: 120_000, durationSource: 'wallclock' }, [test('a')]));
+    store.recordRun(payload({ durationMs: 999_000, durationSource: 'wallclock' }, []));
+
+    expect(store.runsForBranch(store.findRepo(REPO)!, 'main', 10)[0]?.durationMs).toBe(120_000);
+  });
+
   it('attaches jobs only for the runs it returned', () => {
     const jobs = [{ externalId: 'j1', name: 'build', runnerOs: 'linux' as const, durationMs: 60_000 }];
 

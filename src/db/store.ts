@@ -203,8 +203,11 @@ function preferKnown(existing: string, incoming: string, placeholder: string): s
 export function mergeRunFacts(existing: RunFacts, incoming: RunFacts): RunFacts {
   const incomingMeasured = incoming.durationMs > 0;
   const existingMeasured = existing.durationMs > 0;
+  // Strictly better provenance only. Deliveries are at-least-once, so an
+  // equal-ranked redelivery must leave the stored measurement alone rather than
+  // swapping it for whichever copy happened to arrive last.
   const betterSourced =
-    DURATION_SOURCE_RANK[incoming.durationSource] >= DURATION_SOURCE_RANK[existing.durationSource];
+    DURATION_SOURCE_RANK[incoming.durationSource] > DURATION_SOURCE_RANK[existing.durationSource];
 
   const takeMeasurement = incomingMeasured && (!existingMeasured || betterSourced);
   const measurement = takeMeasurement ? incoming : existing;

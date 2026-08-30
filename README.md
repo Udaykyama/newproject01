@@ -200,7 +200,7 @@ them the analysis engine, HTTP API and CLI all still work.
             commitSha: process.env.GITHUB_SHA,
             branch: process.env.GITHUB_REF_NAME,
             workflowName: process.env.GITHUB_WORKFLOW,
-            runnerOs: "linux",
+            runnerOs: process.env.RUNNER_OS.toLowerCase(),
             durationMs: Date.now() - Date.parse(startedAt),
             startedAt,
             conclusion: process.env.JOB_STATUS,
