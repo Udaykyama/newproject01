@@ -67,14 +67,16 @@ does not.
       GitHub Actions                       GitHub
             │                                 │
    JUnit XML│(POST /v1/ingest/junit)          │ workflow_run.completed
-            │  ← run duration, attempt, sha   │ ← run_attempt, timings, jobs
+            │  ← results, attempt, sha        │ ← run_attempt, per-job timings
             ▼                                 ▼
       ┌───────────────────────────────────────────────┐
       │  Express API  ·  HMAC-verified webhook route   │
       └───────────────────────┬───────────────────────┘
-                              ▼
+                              │  both producers write the *same* run row,
+                              ▼  merged by provenance (see Cost model)
                   ┌───────────────────────┐
                   │  SQLite  (runs,       │
+                  │  run_jobs,            │
                   │  test_results,        │
                   │  quarantines)         │
                   └───────────┬───────────┘
@@ -83,7 +85,7 @@ does not.
           │  analysis/flaky.ts   contradiction +  │
           │                      flip rate +      │
           │                      Wilson bound     │
-          │  analysis/cost.ts    per-run pricing, │
+          │  analysis/cost.ts    per-job pricing, │
           │                      baseline delta,  │
           │                      flake waste      │
           └───────────────────┬───────────────────┘
@@ -110,7 +112,8 @@ src/
   server.ts            Express app; raw-body webhook route
   cli.ts               Local CLI (ingest / flaky / report)
   db/
-    schema.sql         Two fact tables + repo dimension
+    schema.sql         Fact tables + repo dimension
+    index.ts           Connection, pragmas, additive column migrations
     store.ts           All SQL, fully parameterised
   ingest/junit.ts      JUnit XML → normalised results (validated)
   analysis/
@@ -169,12 +172,20 @@ them the analysis engine, HTTP API and CLI all still work.
 ### Upload from GitHub Actions
 
 ```yaml
+# Capture the start time first, so the upload can report a measured duration.
+- name: Record the start time
+  run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+- name: Run tests
+  run: npm test -- --reporter=junit --outputFile.junit=reports/junit.xml
+
 - name: Upload test results to ci-ledger
   if: always()
   run: |
     node -e '
       const fs = require("fs");
-      const xml = fs.readFileSync("junit.xml", "utf8");
+      const xml = fs.readFileSync("reports/junit.xml", "utf8");
+      const startedAt = process.env.RUN_STARTED_AT;
       fetch(process.env.LEDGER_URL + "/v1/ingest/junit", {
         method: "POST",
         headers: {
@@ -190,7 +201,8 @@ them the analysis engine, HTTP API and CLI all still work.
             branch: process.env.GITHUB_REF_NAME,
             workflowName: process.env.GITHUB_WORKFLOW,
             runnerOs: "linux",
-            durationMs: 0,
+            durationMs: Date.now() - Date.parse(startedAt),
+            startedAt,
             conclusion: process.env.JOB_STATUS,
           },
           junitXml: xml,
@@ -203,12 +215,19 @@ them the analysis engine, HTTP API and CLI all still work.
     JOB_STATUS: ${{ job.status }}
 ```
 
+This repository runs exactly this path against itself — see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and the reusable
+[`report-to-ci-ledger`](.github/actions/report-to-ci-ledger/action.yml) action.
+
 `GITHUB_RUN_ATTEMPT` is the important field: without it, contradictions can never be observed
 and every verdict degrades to a statistical guess.
 
-`durationMs` may be left at `0` in this snippet — a job cannot easily measure its own total
-runtime. Install the GitHub App and the `workflow_run.completed` webhook supplies accurate
-per-job timings automatically, which is what the cost figures are built from.
+Do **not** send `durationMs: 0`. A zero is not a measurement, and a run priced from it lands on
+the one-minute floor. Measuring the elapsed time of the uploading job, as above, is a real
+number even though it misses work done in sibling jobs; the PR comment labels any figure
+derived this way as an estimate. Installing the GitHub App replaces it: the
+`workflow_run.completed` webhook supplies per-job billing data, which is priced exactly and
+overwrites the weaker measurement.
 
 ---
 
@@ -219,20 +238,27 @@ per-job timings automatically, which is what the cost figures are built from.
 | `GET` | `/healthz` | — | Liveness probe |
 | `POST` | `/webhooks/github` | HMAC signature | `workflow_run.completed` ingestion |
 | `POST` | `/v1/ingest/junit` | Ingest token | Upload a run + JUnit XML (or normalised results) |
-| `GET` | `/v1/repos/:owner/:repo/flaky` | — | Ranked flake list (`?includeStable=true`) |
+| `GET` | `/v1/repos/:owner/:repo/flaky` | — | Ranked flake list (`?includeStable=true`, `?limit=`, `?offset=`) |
 | `GET` | `/v1/repos/:owner/:repo/pulls/:n/report` | — | Cost + flake report (`?format=markdown`) |
 | `POST` | `/v1/repos/:owner/:repo/quarantine` | Ingest token | Quarantine a test |
 | `DELETE` | `/v1/repos/:owner/:repo/quarantine` | Ingest token | Lift a quarantine |
 
-Ingestion is **idempotent** on `(repo, run id, attempt)`. Webhooks are delivered at least once,
-and double-counting would corrupt the cost ledger.
+Ingestion is **idempotent** on `(repo, run id, attempt)`: test results are written once and
+only once per run, because webhooks are delivered at least once and double-counting would
+corrupt the cost ledger. The `duplicate` flag in the response means *these results were already
+recorded*, not merely that a row with this key exists — the webhook writes the same row to carry
+duration, so the two must not be conflated.
+
+The flake list is paginated. `limit` defaults to `READ_DEFAULT_PAGE_SIZE` (100) and is capped at
+`READ_MAX_PAGE_SIZE` (500); the response carries `total`, `limit` and `offset`.
 
 ---
 
 ## Cost model
 
 Cost is `ceil(duration ÷ 60s) × rate[runner OS]`, matching how GitHub bills: whole minutes,
-rounded up, per job.
+rounded up, **per job**. A run with one 30-second macOS job and one 30-second Linux job costs a
+full minute of each — not two minutes of whichever ran longer.
 
 | Runner | Default rate (USD/min) | Override |
 | --- | --- | --- |
@@ -240,16 +266,37 @@ rounded up, per job.
 | Windows | `0.016` | `RATE_WINDOWS_USD_PER_MIN` |
 | macOS | `0.080` | `RATE_MACOS_USD_PER_MIN` |
 
-The baseline is the **median** run cost on the base branch, scaled to the number of runs the PR
-triggered. Median rather than mean, because CI durations are heavily right-skewed — one
+The baseline is computed **per workflow**: each workflow the PR triggered is compared to the
+median cost of that same workflow on the base branch, and the results are summed. Comparing
+against a repo-wide median would let a nightly heavy job inflate the number for every PR that
+never triggers it. Median rather than mean, because CI durations are heavily right-skewed — one
 timed-out six-hour run would drag an average far above a typical build.
+
+Re-run attempts are excluded from the baseline sample. A base branch that retries a lot would
+otherwise inflate its own baseline and hide the regressions the comparison exists to surface.
+
+### Where the duration comes from
+
+Both the ingest endpoint and the `workflow_run.completed` webhook write the same run row, and
+they know different things: ingest carries the test results, the webhook carries what GitHub
+billed. Neither is discarded. Facts are merged by provenance, strongest wins, and a zero can
+never displace a measurement:
+
+| Source | Meaning | Accuracy |
+| --- | --- | --- |
+| `jobs` | Per-job durations from the GitHub App | Reproduces the invoice |
+| `wallclock` | Webhook run wall-clock time | Under-reports parallel jobs |
+| `reported` | A duration the uploading CI job asserted | Weakest; misses sibling jobs |
+
+The PR comment states which of these it used whenever the figure is not derived entirely from
+job data, so an estimate is always labelled as one.
 
 ### Known approximations
 
-- When webhook job data is available, per-job durations are summed (accurate). Without it, run
-  wall-clock time is used, which **under-reports** runs with many parallel jobs.
-- A run whose jobs span multiple operating systems is priced at whichever OS consumed the most
-  time. Splitting cost per job is the natural next increment.
+- Runs with no job data are priced from a single duration and one runner OS, which
+  **under-reports** runs with many parallel jobs. Install the GitHub App to remove this.
+- Rates are configured, not fetched. Self-hosted runners and negotiated pricing need
+  `RATE_*_USD_PER_MIN` set to match the real invoice.
 
 ---
 
@@ -257,14 +304,44 @@ timed-out six-hour run would drag an average far above a typical build.
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run  (164 tests)
+npm test            # vitest run
+npm run test:ci     # same, plus a JUnit report in reports/junit.xml
 npm run build       # tsc + copy schema.sql into dist
 npm run dev         # watch mode
 ```
 
-Tests cover the XML parser, the detection engine, the cost model, the store's idempotency
-guarantees, the comment renderer, webhook signature verification, input validation, response
-hardening and rate limiting, and the full HTTP surface end to end over a real socket.
+Tests cover the XML parser, the detection engine, the cost model, the run-row merge between the
+two producers, the store's idempotency guarantees, quarantine lifecycle, the comment renderer,
+the CLI, webhook signature verification, input validation, response hardening and rate limiting,
+and the full HTTP surface end to end over a real socket.
+
+`.github/workflows/ci.yml` runs typecheck, tests and build on every pull request, and uploads
+the JUnit report the product itself ingests.
+
+### The flake canary
+
+`test/flake-canary.test.ts` fails about half the time **on purpose**. It is skipped unless
+`CI_LEDGER_FLAKE_CANARY=true`, and runs only in its own hourly workflow, never in the required
+checks.
+
+It exists because a detector that never fires is indistinguishable from a healthy suite. With a
+labelled positive on a real repository, "found no flakes" can be told apart from "found
+nothing".
+
+### Deployment
+
+```bash
+docker build -t ci-ledger .
+docker run -p 3000:3000 \
+  -v ci-ledger-data:/data \
+  -e INGEST_TOKEN=... \
+  ci-ledger
+```
+
+The database is a **file**, and it holds the run history the product exists to accumulate. It
+must live on a volume that outlives the container; the image declares `/data` as a volume and
+defaults `DATABASE_PATH` into it so a forgotten mount degrades to an anonymous volume rather
+than silent data loss on the next deploy.
 
 ### Security notes
 
@@ -289,17 +366,26 @@ hardening and rate limiting, and the full HTTP surface end to end over a real so
 - All SQL is parameterised; no caller-supplied value is ever interpolated into a query.
 - Internal error messages are never echoed to clients.
 
+**Read endpoints are unauthenticated, and that is a single-tenant decision.** For a self-hosted
+instance behind a team's own network boundary it is the right trade: no token to distribute for
+data the team already owns. It becomes a data leak the moment two tenants share an instance —
+test names, failure counts and CI spend are all readable by anyone who knows the repository
+slug. Per-installation authentication and row-level scoping are therefore a **prerequisite for
+Milestone 2**, not a follow-up to it.
+
 ---
 
 ## Roadmap
 
-**Milestone 1 — prove the wedge on one real repository (this codebase).** Ingest a month of
-history from a repo with a known-flaky suite and confirm the detector finds the flakes the team
-already knows about, without flagging real regressions. If precision is poor here, nothing else
-matters.
+**Milestone 1 — prove the wedge on one real repository (this codebase).** In progress: CI runs
+on every PR, emits JUnit and self-ingests, and the flake canary supplies a labelled positive to
+measure precision against. What remains is accumulating enough history to report a precision
+number.
 
 **Milestone 2 — the GitHub App install.** Marketplace listing, per-installation storage,
-one-click onboarding. This is the distribution moat.
+one-click onboarding. This is the distribution moat. Blocked on per-installation authentication
+and row-level scoping for the read endpoints (see Security notes); the container image and
+persistent-volume story are in place.
 
 **Milestone 3 — auto-quarantine.** Open a PR that skips a confirmed flake and files a tracking
 issue. This converts the tool from a report into an action, which is what people pay for.
