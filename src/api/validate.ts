@@ -13,6 +13,7 @@ export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: 
 
 /** GitHub's own constraint on owner and repository names. */
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
+const BRANCH_PATTERN = /^[A-Za-z0-9._/+-]+$/;
 const SHA_PATTERN = /^[0-9a-fA-F]{7,64}$/;
 const RUNNERS: readonly RunnerOs[] = ['linux', 'windows', 'macos'];
 const STATUSES: readonly TestStatus[] = ['passed', 'failed', 'error', 'skipped'];
@@ -50,6 +51,23 @@ export function parseRepoSlug(slug: unknown): { owner: string; name: string } | 
 
 export function isValidRepoName(value: string): boolean {
   return NAME_PATTERN.test(value);
+}
+
+/**
+ * Validate a git branch name.
+ *
+ * A subset of `git check-ref-format` covering the rules that matter here. The
+ * value arrives from the query string and is echoed back in reports, so it is
+ * constrained at the edge rather than escaped at each use. The character class
+ * is a flat, non-backtracking pattern; the structural rules are plain string
+ * checks so a long input cannot be made expensive.
+ */
+export function isValidBranchName(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false;
+  if (!BRANCH_PATTERN.test(value)) return false;
+  if (value.startsWith('/') || value.startsWith('-') || value.startsWith('.')) return false;
+  if (value.endsWith('/') || value.endsWith('.') || value.endsWith('.lock')) return false;
+  return !value.includes('..') && !value.includes('//') && !value.includes('@{');
 }
 
 function parseResults(value: unknown, errors: string[]): TestResult[] {

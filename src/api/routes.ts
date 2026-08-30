@@ -5,7 +5,7 @@ import { isFlaky } from '../analysis/flaky.js';
 import { renderPullRequestComment } from '../github/comment.js';
 import { requireIngestToken } from './auth.js';
 import { ingestRateLimiter } from './rate-limit.js';
-import { isValidRepoName, parseIngestRequest } from './validate.js';
+import { isValidBranchName, isValidRepoName, parseIngestRequest } from './validate.js';
 import type { RepoRef } from '../types.js';
 
 /** JUnit reports from large monorepos are genuinely megabytes of XML. */
@@ -103,11 +103,20 @@ export function createRouter(context: AppContext): Router {
     const repoId = requireRepoId(context, repo, res);
     if (repoId === null) return;
 
-    const baseBranch = typeof req.query.baseBranch === 'string' ? req.query.baseBranch : 'main';
+    const requestedBranch = req.query.baseBranch;
+    if (requestedBranch !== undefined && (typeof requestedBranch !== 'string' || !isValidBranchName(requestedBranch))) {
+      res.status(400).json({ error: 'baseBranch must be a valid git branch name' });
+      return;
+    }
+
+    const baseBranch = requestedBranch ?? 'main';
     const report = buildPullRequestReport(store, repoId, repo, pullRequestNumber, baseBranch, config);
 
     if (req.query.format === 'markdown') {
-      res.type('text/markdown').send(renderPullRequestComment(report));
+      // Served as plain text: the body is markdown source for a PR comment,
+      // consumed by API clients rather than rendered by a browser, and it
+      // carries test names that originate in untrusted CI reports.
+      res.type('text/plain; charset=utf-8').send(renderPullRequestComment(report));
       return;
     }
 

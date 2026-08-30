@@ -241,13 +241,36 @@ describe('flake and cost reporting', () => {
     const response = await fetch(`${baseUrl}/v1/repos/flaky/project/pulls/7/report?format=markdown`);
     const body = await response.text();
 
-    expect(response.headers.get('content-type')).toContain('text/markdown');
+    // Plain text, not text/markdown: the body carries test names from
+    // untrusted CI reports and must never be rendered as a document.
+    expect(response.headers.get('content-type')).toContain('text/plain');
     expect(body).toContain('## CI Ledger');
     expect(body).toContain('wobbly');
   });
 
   it('rejects a non-numeric pull request number', async () => {
     const response = await fetch(`${baseUrl}/v1/repos/flaky/project/pulls/abc/report`);
+    expect(response.status).toBe(400);
+  });
+
+  it('accepts a valid base branch override', async () => {
+    const response = await fetch(`${baseUrl}/v1/repos/flaky/project/pulls/7/report?baseBranch=release/2.1`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a base branch that is not a valid git ref', async () => {
+    const response = await fetch(
+      `${baseUrl}/v1/repos/flaky/project/pulls/7/report?baseBranch=${encodeURIComponent('<script>x</script>')}`,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: 'baseBranch must be a valid git branch name' });
+  });
+
+  it('rejects a repeated base branch parameter', async () => {
+    // Express parses a repeated key as an array; it must not be trusted.
+    const response = await fetch(`${baseUrl}/v1/repos/flaky/project/pulls/7/report?baseBranch=main&baseBranch=dev`);
+
     expect(response.status).toBe(400);
   });
 });

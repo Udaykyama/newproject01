@@ -257,14 +257,14 @@ timed-out six-hour run would drag an average far above a typical build.
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run  (121 tests)
+npm test            # vitest run  (158 tests)
 npm run build       # tsc + copy schema.sql into dist
 npm run dev         # watch mode
 ```
 
 Tests cover the XML parser, the detection engine, the cost model, the store's idempotency
-guarantees, the comment renderer, webhook signature verification, response hardening and rate
-limiting, and the full HTTP surface end to end over a real socket.
+guarantees, the comment renderer, webhook signature verification, input validation, response
+hardening and rate limiting, and the full HTTP surface end to end over a real socket.
 
 ### Security notes
 
@@ -282,7 +282,10 @@ limiting, and the full HTTP surface end to end over a real socket.
 - Every response sends `X-Content-Type-Options: nosniff`. Test names arrive from untrusted CI
   reports and are echoed back in JSON and markdown, so browsers must not sniff them as HTML.
 - Markdown table cells escape backslashes before pipes, so a test name cannot break out of the
-  table it is rendered into.
+  table it is rendered into. The markdown report is served as `text/plain`, since it is comment
+  source for an API client rather than a document for a browser to render.
+- Repository, branch and commit values from the request are validated against their upstream
+  grammars at the edge, so untrusted text is constrained once instead of escaped at each use.
 - All SQL is parameterised; no caller-supplied value is ever interpolated into a query.
 - Internal error messages are never echoed to clients.
 
