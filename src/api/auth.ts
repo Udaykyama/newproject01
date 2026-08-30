@@ -12,10 +12,23 @@ export function secureCompare(a: string, b: string): boolean {
   return timingSafeEqual(digest(a), digest(b));
 }
 
+/**
+ * Extract a bearer token from an Authorization header.
+ *
+ * Parsed by slicing rather than with a regular expression: a pattern such as
+ * `/^Bearer\s+(.+)$/` backtracks polynomially on a header of many spaces,
+ * which an unauthenticated caller fully controls.
+ */
 function extractBearer(header: string | undefined): string | null {
   if (!header) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match?.[1]?.trim() ?? null;
+
+  const trimmed = header.trim();
+  const prefix = 'bearer ';
+  if (trimmed.length <= prefix.length) return null;
+  if (trimmed.slice(0, prefix.length).toLowerCase() !== prefix) return null;
+
+  const token = trimmed.slice(prefix.length).trim();
+  return token === '' ? null : token;
 }
 
 /**

@@ -24,6 +24,7 @@
     "@octokit/webhooks": "^14.2.0",
     "better-sqlite3": "^13.0.3",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
     "fast-xml-parser": "^5.11.1"
   },
   "devDependencies": {

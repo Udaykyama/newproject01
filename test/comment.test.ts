@@ -129,6 +129,21 @@ describe('renderPullRequestComment', () => {
     expect(body).toContain('handles a \\| b input');
   });
 
+  it('escapes backslashes before pipes so an escaped pipe cannot break out', () => {
+    // Escaping pipes first would emit `a\\|b`, where the added backslash is
+    // consumed as a literal and the pipe still splits the cell.
+    const body = renderPullRequestComment(report({ flakes: [flake({ name: String.raw`a\|b` })] }));
+
+    expect(body).toContain(String.raw`a\\\|b`);
+  });
+
+  it('flattens newlines that would break the table', () => {
+    const body = renderPullRequestComment(report({ flakes: [flake({ name: 'line one\nline two' })] }));
+
+    const tableRow = body.split('\n').find((line) => line.includes('line one'));
+    expect(tableRow).toContain('line one line two');
+  });
+
   it('truncates the list and says how many were hidden', () => {
     const many = Array.from({ length: 14 }, (_, index) => flake({ name: `test-${index}` }));
     const body = renderPullRequestComment(report({ flakes: many }));

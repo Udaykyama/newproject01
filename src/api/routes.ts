@@ -4,6 +4,7 @@ import { buildPullRequestReport, buildRepoReport } from '../analysis/report.js';
 import { isFlaky } from '../analysis/flaky.js';
 import { renderPullRequestComment } from '../github/comment.js';
 import { requireIngestToken } from './auth.js';
+import { ingestRateLimiter } from './rate-limit.js';
 import { isValidRepoName, parseIngestRequest } from './validate.js';
 import type { RepoRef } from '../types.js';
 
@@ -42,6 +43,9 @@ function requireRepoId(context: AppContext, repo: RepoRef, res: Response): numbe
 export function createRouter(context: AppContext): Router {
   const router = Router();
   const { config, store } = context;
+  // Rate limiting runs before authentication so a brute-force attempt is
+  // throttled rather than merely rejected.
+  const ingestLimit = ingestRateLimiter(config.limits.ingestPerMinute);
   const ingestAuth = requireIngestToken(config.ingestToken);
 
   router.get('/healthz', (_req, res) => {
@@ -49,7 +53,7 @@ export function createRouter(context: AppContext): Router {
   });
 
   /** CI uploads a finished run plus its JUnit report. */
-  router.post('/v1/ingest/junit', ingestAuth, json({ limit: INGEST_BODY_LIMIT }), (req, res) => {
+  router.post('/v1/ingest/junit', ingestLimit, ingestAuth, json({ limit: INGEST_BODY_LIMIT }), (req, res) => {
     const parsed = parseIngestRequest(req.body);
     if (!parsed.ok) {
       res.status(400).json({ error: 'invalid payload', details: parsed.errors });
@@ -110,7 +114,7 @@ export function createRouter(context: AppContext): Router {
     res.json(report);
   });
 
-  router.post('/v1/repos/:owner/:repo/quarantine', ingestAuth, json(), (req, res) => {
+  router.post('/v1/repos/:owner/:repo/quarantine', ingestLimit, ingestAuth, json(), (req, res) => {
     const repo = readRepoParams(req, res);
     if (!repo) return;
 
@@ -128,7 +132,7 @@ export function createRouter(context: AppContext): Router {
     res.status(201).json({ quarantined: { suite, name, reason } });
   });
 
-  router.delete('/v1/repos/:owner/:repo/quarantine', ingestAuth, json(), (req, res) => {
+  router.delete('/v1/repos/:owner/:repo/quarantine', ingestLimit, ingestAuth, json(), (req, res) => {
     const repo = readRepoParams(req, res);
     if (!repo) return;
 

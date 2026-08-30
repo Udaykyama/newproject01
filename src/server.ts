@@ -1,6 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { AppContext } from './context.js';
 import { createRouter } from './api/routes.js';
+import { webhookRateLimiter } from './api/rate-limit.js';
 import { createWebhooks } from './github/webhooks.js';
 
 /** Webhook payloads are small; a tight limit blunts trivial DoS attempts. */
@@ -43,11 +44,19 @@ export function createServer(context: AppContext): Express {
 
   app.disable('x-powered-by');
 
+  // Responses are JSON or markdown and must never be sniffed into HTML: test
+  // names flow into them from untrusted CI reports.
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+  });
+
   if (context.config.webhookSecret) {
     const webhooks = createWebhooks(context);
 
     app.post(
       '/webhooks/github',
+      webhookRateLimiter(context.config.limits.webhookPerMinute),
       express.text({ type: '*/*', limit: WEBHOOK_BODY_LIMIT }),
       async (req: Request, res: Response) => {
         const id = req.get('x-github-delivery');

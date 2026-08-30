@@ -22,6 +22,13 @@ export interface FlakeTuning {
   readonly windowSize: number;
 }
 
+export interface RateLimits {
+  /** Max webhook deliveries accepted per client IP per minute. */
+  readonly webhookPerMinute: number;
+  /** Max authenticated ingest/quarantine requests per client IP per minute. */
+  readonly ingestPerMinute: number;
+}
+
 export interface Config {
   readonly port: number;
   readonly databasePath: string;
@@ -32,6 +39,7 @@ export interface Config {
   readonly postPrComments: boolean;
   readonly rates: CostRates;
   readonly flake: FlakeTuning;
+  readonly limits: RateLimits;
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -73,6 +81,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       minRuns: Math.max(2, Math.trunc(num(env.FLAKE_MIN_RUNS, 5))),
       flipRateThreshold: num(env.FLAKE_FLIP_RATE_THRESHOLD, 0.15),
       windowSize: Math.max(2, Math.trunc(num(env.FLAKE_WINDOW_SIZE, 50))),
+    },
+    limits: {
+      webhookPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_WEBHOOK_PER_MIN, 600))),
+      ingestPerMinute: Math.max(1, Math.trunc(num(env.RATE_LIMIT_INGEST_PER_MIN, 300))),
     },
   };
 }

@@ -257,14 +257,14 @@ timed-out six-hour run would drag an average far above a typical build.
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run  (109 tests)
+npm test            # vitest run  (121 tests)
 npm run build       # tsc + copy schema.sql into dist
 npm run dev         # watch mode
 ```
 
 Tests cover the XML parser, the detection engine, the cost model, the store's idempotency
-guarantees, the comment renderer, webhook signature verification, and the full HTTP surface end
-to end over a real socket.
+guarantees, the comment renderer, webhook signature verification, response hardening and rate
+limiting, and the full HTTP surface end to end over a real socket.
 
 ### Security notes
 
@@ -274,6 +274,15 @@ to end over a real socket.
   nor its length leak through timing.
 - If `INGEST_TOKEN` is unset the ingest endpoint returns `503` rather than running open — an
   unauthenticated ingest endpoint would let anyone poison another repository's statistics.
+- Endpoints that verify a secret — the webhook route and the token-authenticated ingest and
+  quarantine routes — are rate limited per client IP so the secret cannot be brute-forced. The
+  limiter runs *before* authentication. Tune with `RATE_LIMIT_WEBHOOK_PER_MIN` (default 600) and
+  `RATE_LIMIT_INGEST_PER_MIN` (default 300). Unauthenticated read endpoints are not limited,
+  since they carry no secret to guess.
+- Every response sends `X-Content-Type-Options: nosniff`. Test names arrive from untrusted CI
+  reports and are echoed back in JSON and markdown, so browsers must not sniff them as HTML.
+- Markdown table cells escape backslashes before pipes, so a test name cannot break out of the
+  table it is rendered into.
 - All SQL is parameterised; no caller-supplied value is ever interpolated into a query.
 - Internal error messages are never echoed to clients.
 

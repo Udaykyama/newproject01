@@ -34,8 +34,14 @@ function minutes(value: number): string {
 }
 
 function escapeCell(value: string): string {
-  // Pipes and newlines would break the surrounding markdown table.
-  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+  // Backslashes must be escaped first: doing pipes first would let an input
+  // such as `a\|b` emit `a\\|b`, where the added backslash is consumed as a
+  // literal and the pipe still breaks out of the table cell.
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ')
+    .trim();
 }
 
 function truncate(value: string, max = 80): string {
